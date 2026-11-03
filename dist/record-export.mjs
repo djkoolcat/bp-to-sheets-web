@@ -6,18 +6,26 @@ const identity=d=>[d.bridgeId,d.meterId,d.chip,d.boardId,d.session].join('|');
 export const columns=['측정 일시','수축기','이완기','맥박','혈압계 식별자','사용자 슬롯','수신 일시','recordId','보드 전송 상태','flags'];
 
 function calendar(value){
- const m=typeof value==='string'&&value.match(/^(20\d{2})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2}))?\+09:00$/);
+ const m=typeof value==='string'&&value.match(/^((?:20\d{2}|2100))-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2}))?\+09:00$/);
  if(!m)fail('invalid_export_reply');
  const [year,month,day,hour,minute,second]=m.slice(1).map(v=>v===undefined?0:Number(v));
  const date=new Date(Date.UTC(year,month-1,day,hour,minute,second));
- if(year>2063||date.getUTCFullYear()!==year||date.getUTCMonth()!==month-1||date.getUTCDate()!==day||hour>23||minute>59||second>59)fail('invalid_export_reply');
+ if(year>2100||date.getUTCFullYear()!==year||date.getUTCMonth()!==month-1||date.getUTCDate()!==day||hour>23||minute>59||second>59)fail('invalid_export_reply');
  return {serial:date.getTime()/86400000+25569,seconds:m[6]!==undefined};
 }
 function checkedRow(r,meterId){
  if(!r||!integer(r.userSlot,1,2)||typeof r.recordId!=='string'||
-  !new RegExp('^hem1:'+meterId+':'+r.userSlot+':[a-f0-9]{64}$').test(r.recordId)||
-  !integer(r.systolic,25,250)||!integer(r.diastolic,1,249)||r.systolic<=r.diastolic||
-  !integer(r.pulse,1,255)||!integer(r.flags,0,3)||typeof r.acknowledged!=='boolean')fail('invalid_export_reply');
+  typeof r.acknowledged!=='boolean')fail('invalid_export_reply');
+ const micro=r.recordId.startsWith('b4v2:');
+ if(micro){
+  calendar(r.measuredAt);
+  const stamp=r.measuredAt.slice(0,16).replace(/[-T:]/g,'');
+  if(r.recordId!==`b4v2:${meterId}:${r.userSlot}:${stamp}:${r.systolic}:${r.diastolic}:${r.pulse}`||
+   !/^20\d{2}-\d{2}-\d{2}T\d{2}:\d{2}\+09:00$/.test(r.measuredAt)||
+   !integer(r.systolic,60,255)||!integer(r.diastolic,40,200)||!integer(r.pulse,20,250)||!integer(r.flags,0,65535))fail('invalid_export_reply');
+ }else if(!new RegExp('^hem1:'+meterId+':'+r.userSlot+':[a-f0-9]{64}$').test(r.recordId)||
+  Number(r.measuredAt?.slice(0,4))>2063||!integer(r.systolic,25,250)||!integer(r.diastolic,1,249)||!integer(r.pulse,1,255)||!integer(r.flags,0,3))fail('invalid_export_reply');
+ if(r.systolic<=r.diastolic)fail('invalid_export_reply');
  calendar(r.measuredAt);
  const out={};for(const k of ['recordId','measuredAt','systolic','diastolic','pulse','userSlot','flags','acknowledged'])out[k]=r[k];return out;
 }
@@ -96,7 +104,7 @@ function notes(data){
  ['측정 일시','혈압계 원본 값을 기존 펌웨어의 +09:00 기준으로 표시합니다. 초를 모르면 분까지만 표시합니다.'],
  ['수신 일시','보드에 별도로 저장되지 않아 빈칸입니다. 파일 생성 시각으로 채우지 않습니다.'],
  ['보드 전송 상태','시트 저장 확인: 서버 확인을 보드에 보존함. 전송 대기: 서버에 이미 있을 수도 있으며 보드가 확인을 기다리는 상태.'],
- ['flags','기존 파서 값: bit 0 움직임, bit 1 불규칙 맥파. 의학적 판정이 아닙니다.'],
+ ['flags','오므론: bit 0 움직임, bit 1 불규칙 맥파. Microlife: 원본 16비트 값이며 비트 의미를 추정하지 않습니다.'],
  ['데이터 보존','읽기 전용 내보내기입니다. 기록·설정·전송 대기 상태와 혈압계 시간/카운터를 바꾸지 않습니다.'],
  ['포함하지 않는 정보','Wi-Fi 비밀번호, 기기 토큰, 혈압계 인증 키, 수신 URL, 원시 통신 데이터'],
  ['펌웨어',data.firmware||'']];

@@ -114,3 +114,10 @@ test('Operator flow binds Google confirmation to the token and clears it for a d
   byId('mode-wizard').onclick();assert.equal(byId('token-entry').parent,byId('wizard-token-slot'));assert.equal(wizard.maySave(),false);
  }finally{for(const [k,descriptor] of Object.entries(old))if(descriptor)Object.defineProperty(globalThis,k,descriptor);else delete globalThis[k];}
 });
+
+test('Explicit registration change retains both managed meter IDs for a physical receiver',()=>{
+ const b={bridgeId:'esp32-000000000001',meterId:'b4-synthetic'};
+ const old=JSON.stringify({[b.bridgeId]:{token:'a'.repeat(64),meterId:'hem-synthetic'}});
+ const next=JSON.parse(deviceProperties(old,b,'a'.repeat(64),true))[b.bridgeId];
+ assert.deepEqual(next.meterIds,['hem-synthetic','b4-synthetic']);assert.equal(next.meterId,b.meterId);
+});

@@ -31,7 +31,7 @@ function doPost(e) {
     response.batchId = request.batchId;
     const config = readConfig_();
     const device = authenticate_(request, config.devices);
-    response.meterId = device.meterId;
+    response.meterId = request.meterId;
     if(request.operation === "status") {
       validateStatus_(request.status);
       lock = LockService.getScriptLock();
@@ -181,6 +181,7 @@ function readConfig_() {
         typeof device.meterId !== 'string' || !BP_SAFE_ID_.test(device.meterId)) {
       fail_('configuration_error');
     }
+    if(device.meterIds!==undefined&&(!Array.isArray(device.meterIds)||!device.meterIds.length||device.meterIds.length>8||device.meterIds.some(id=>typeof id!=='string'||!BP_SAFE_ID_.test(id))||new Set(device.meterIds).size!==device.meterIds.length||device.meterIds.indexOf(device.meterId)<0))fail_('configuration_error');
   });
   return {spreadsheetId: spreadsheetId, sheetName: sheetName, devices: devices};
 }
@@ -191,7 +192,7 @@ function authenticate_(request, devices) {
   // Always compare exactly 64 characters, also for unknown receiver IDs.
   const expected = device ? device.token : '0'.repeat(64);
   const matches = constantTimeEqual_(request.token, expected);
-  if (!known || !matches || device.meterId !== request.meterId) {
+  if (!known || !matches || (device.meterIds||[device.meterId]).indexOf(request.meterId)<0) {
     fail_('authentication_failed');
   }
   return device;
@@ -232,16 +233,18 @@ function validateRecord_(record, meterId) {
   if (plainObject_(record) && typeof record.recordId === 'string' && record.recordId.indexOf('hem1:') === 0) {
     validateHemRequest_(record, meterId); return;
   }
-  if (!plainObject_(record) || !validMeasuredAt_(record.measuredAt) ||
+  const slotted=plainObject_(record)&&typeof record.recordId==='string'&&record.recordId.indexOf('b4v2:')===0;
+  const validTime=plainObject_(record)&&(slotted?typeof record.measuredAt==='string'&&/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}\+09:00$/.test(record.measuredAt)&&validMeasuredAt_(record.measuredAt.slice(0,16)+':00'+record.measuredAt.slice(16)):validMeasuredAt_(record.measuredAt));
+  if (!plainObject_(record) || !validTime ||
       !integerIn_(record.systolic, 60, 255) ||
       !integerIn_(record.diastolic, 40, 200) ||
       record.systolic <= record.diastolic ||
       !integerIn_(record.pulse, 20, 250) || !integerIn_(record.flags, 0, 65535) ||
-      record.userSlot !== null || typeof record.recordId !== 'string') {
+      (slotted?!integerIn_(record.userSlot,1,2):record.userSlot!==null) || typeof record.recordId !== 'string') {
     fail_('invalid_record');
   }
   const stamp = record.measuredAt.slice(0, 16).replace(/[-T:]/g, '');
-  const expected = 'b4v1:' + meterId + ':' + stamp + ':' +
+  const expected = (slotted?'b4v2:'+meterId+':'+record.userSlot:'b4v1:'+meterId) + ':' + stamp + ':' +
     record.systolic + ':' + record.diastolic + ':' + record.pulse;
   if (record.recordId !== expected) fail_('invalid_record');
 }
@@ -265,7 +268,7 @@ function validMeasuredAt_(value) {
 }
 
 function recordRow_(record, meterId, receivedAt) {
-  // Slot is unknown in the verified B4 protocol, so the column stays blank.
+  // Legacy b4v1 retains an unknown slot; b4v2 carries a checked response user.
   // Flags are validated but not persisted in the eight-column user schema.
   return [record.measuredAt, record.systolic, record.diastolic, record.pulse,
     meterId, record.userSlot === null ? '' : String(record.userSlot), receivedAt, record.recordId];
@@ -294,7 +297,7 @@ function readRows_(sheet) {
       const stored = {measuredAt: row[0], systolic: row[1], diastolic: row[2],
         pulse: row[3], flags: 0, userSlot: row[5] === '' ? null : Number(row[5]), recordId: row[7]};
       if (typeof stored.recordId === 'string' && stored.recordId.indexOf('hem1:') === 0) validateHemStored_(stored, row[4]);
-      else { if (row[5] !== '') fail_('invalid_record'); validateRecord_(stored, row[4]); }
+      else validateRecord_(stored, row[4]);
     } catch (error) { fail_('sheet_corrupt'); }
     // Even identical duplicated rows require repair; do not conceal corruption.
     if (byId[row[7]]) fail_('sheet_corrupt');
@@ -428,8 +431,10 @@ function receiveStatus_(request,config){
   const matches=status.rows.map((r,i)=>i>0&&r[0]===request.bridgeId?i:-1).filter(i=>i>0);
   if(matches.length>1)fail_('sheet_corrupt');
   const index=matches.length?matches[0]:status.rows.length,old=matches.length?status.rows[index]:null;
-  if(old&&old[1]!==request.meterId)fail_('sheet_corrupt');
+  // One physical bridge can switch between its explicitly registered meter IDs.
+  // Event sequence/watermark is bridge-wide; measurement queues stay separate.
   const watermark=old?Number(old[13]):0;if(!integerIn_(watermark,0,4294967295))fail_('sheet_corrupt');
+  if(old&&old[1]!==request.meterId&&s.newestSeq<=watermark)return Math.min(watermark,s.newestSeq);
   const ids=eventRows_(history,request.bridgeId),additions=[];
   s.events.forEach(function(e){
     if(e.seq<=watermark)return;
@@ -449,7 +454,7 @@ function receiveStatus_(request,config){
   const accepted=s.events.length?s.events[s.events.length-1].seq:s.reportedSeq;
   const row=[request.bridgeId,request.meterId,request.firmwareVersion,stateName_(s),now,epochText_(s.lastReadAt),epochText_(s.lastSavedAt),s.pending,s.remembered,s.error,s.uptimeSeconds,s.logReady?'정상':'오류',s.logDropped,Math.max(watermark,accepted),s.readFailed?'실패':s.lastReadAt?'성공':'미확인'];
   // Keep known successful times when a rebooted device has no surviving event timestamp.
-  if(old){if(!row[5])row[5]=old[5];if(!row[6])row[6]=old[6];}
+  if(old&&old[1]===request.meterId){if(!row[5])row[5]=old[5];if(!row[6])row[6]=old[6];}
   monitorWrite_(status.sheet,index+1,row);SpreadsheetApp.flush();
   const checked=status.sheet.getRange(index+1,1,1,row.length).getValues()[0];
   if(JSON.stringify(checked)!==JSON.stringify(row))fail_('verification_failed');
@@ -484,7 +489,7 @@ function checkDeviceHealth(){
     const book=SpreadsheetApp.openById(config.spreadsheetId),status=monitorTable_(book,'기기상태',BP_STATUS_HEADERS_,false),history=monitorTable_(book,'장애이력',BP_EVENT_HEADERS_,false);
     const ids=eventRows_(history),now=new Date(),stamp=now.toISOString();
     status.rows.slice(1).forEach(function(row,i){
-      if(!Object.prototype.hasOwnProperty.call(config.devices,row[0])||config.devices[row[0]].meterId!==row[1])return;
+      if(!Object.prototype.hasOwnProperty.call(config.devices,row[0])||(config.devices[row[0]].meterIds||[config.devices[row[0]].meterId]).indexOf(row[1])<0)return;
       const last=Date.parse(row[4]);if(!Number.isFinite(last)||now.getTime()-last<BP_OFFLINE_MS_||row[3]==='응답 없음')return;
       const id='offline:'+row[0]+':'+row[4];
       if(!ids[id]){const r=[stamp,stamp,row[0],row[1],id,'응답 없음','30분 이상 상태 보고 없음 · 전원/네트워크/서버 원인 미확정',row[2],'',''];monitorWrite_(history.sheet,history.sheet.getLastRow()+1,r);ids[id]=r;}

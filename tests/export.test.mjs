@@ -80,3 +80,11 @@ test('File names contain only a scope and export date; extension and user are va
  assert.equal(fileName('csv',0,now),'bp-records-all-20260102.csv');
  assert.throws(()=>fileName('html',0,now));assert.throws(()=>fileName('csv','../private',now));
 });
+
+test('B4 exports retain user slots, minute precision and 16-bit flags without raw packets',async()=>{
+ const r={recordId:`b4v2:${meterId}:2:202611040830:123:81:67`,measuredAt:'2026-11-04T08:30+09:00',systolic:123,diastolic:81,pulse:67,userSlot:2,flags:0x1234,acknowledged:false};
+ const data=await collectRecords({...source([r]),user:2});assert.equal(data.rows[0].flags,0x1234);
+ assert.match(new TextDecoder().decode(csvBytes(data)),/2026-11-04T08:30\+09:00/);assert(xlsxBytes(data).length>1000);
+ await assert.rejects(collectRecords(source([{...r,userSlot:1}])),/invalid_export_reply/);
+ await assert.rejects(collectRecords(source([{...r,flags:65536}])),/invalid_export_reply/);
+});

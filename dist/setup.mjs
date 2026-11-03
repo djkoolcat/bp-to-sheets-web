@@ -42,9 +42,12 @@ export function deviceProperties(existing,board,token,replace=false){
  for(const [id,d] of Object.entries(devices)){
   if(!/^esp32-[a-f0-9]{12}$/.test(id)||!plain(d)||!/^([a-f0-9]{64})$/.test(d.token)||!/^[a-z0-9][a-z0-9_-]{0,31}$/.test(d.meterId))fail('invalid_devices');
  }
+ for(const d of Object.values(devices))if(d.meterIds!==undefined&&(!Array.isArray(d.meterIds)||!d.meterIds.length||d.meterIds.length>8||new Set(d.meterIds).size!==d.meterIds.length||!d.meterIds.includes(d.meterId)||d.meterIds.some(x=>typeof x!=='string'||!/^[a-z0-9][a-z0-9_-]{0,31}$/.test(x))))fail('invalid_devices');
  const old=devices[board.bridgeId];
  if(old&&(old.token!==token||old.meterId!==board.meterId)&&!replace)fail('device_already_registered');
- devices[board.bridgeId]={...old,token,meterId:board.meterId};
+ const ids=[...new Set([...(old?.meterIds||[]),...(old?[old.meterId]:[]),board.meterId])];
+ if(ids.length>8)fail('invalid_devices');
+ devices[board.bridgeId]={...old,token,meterId:board.meterId,...(ids.length>1?{meterIds:ids}:{})};
  const value=JSON.stringify(devices);if(new TextEncoder().encode(value).length>9000)fail('devices_too_large');return value;
 }
 export function linksPreserved(before,after,urls){
@@ -56,6 +59,7 @@ export function sheetFormula(user){
 }
 export function pairingStatus(board){
  if(!board)return 'disconnected';
+ if(board.pairingRequired===false)return board.autoEnabled?'saved_registration':'needs_auto_target';
  if(!board.hasPairingKey)return 'needs_registration';
  return board.autoEnabled?'saved_registration':'needs_auto_target';
 }

@@ -17,14 +17,14 @@ function controls(){
  $('fields').disabled=busy||!connected||!board?.queueReady;
  $('test').disabled=busy||!connected||!board?.configured||dirty;
  $('history').disabled=busy||!connected||!Number.isInteger(board?.logNewestSeq);
- wizard?.render();
+ meterControls();wizard?.render();
 }
 function state(d){
  board=d;wizard?.observe(d);$('pending').textContent=d.pending;$('remembered').textContent=d.remembered;$('version').textContent=d.firmwareVersion;
- $('model').textContent=d.chip==='esp32s3'?'Waveshare S3 LCD 1.54 · HEM-7155T':'ESP32-C3 · HEM-7155T';
+ $('model').textContent=(d.chip==='esp32s3'?'Waveshare S3 LCD 1.54':'ESP32-C3')+' · '+(d.meterModel==='microlife-b4bt'?'Microlife BP B4 BT':'HEM-7155T');
  $('wifi').textContent=d.wifiStatus===3?'연결됨':d.error==='wifi_test_offline'?'단절 시험 중':'연결 대기';
  $('cloud').textContent=d.sending?'전송 중':d.result==='confirmed'?(d.lastOperation==='test'?'연결 시험 통과':'저장 확인 완료'):d.error?'확인 대기 · 기록 보존':d.configured?'자동 전송 대기':'설정 필요';
- $('automatic').textContent=d.autoEnabled?'켜짐':d.hasPairingKey?'꺼짐':'혈압계 등록 필요';
+ $('automatic').textContent=d.autoEnabled?'켜짐':d.pairingRequired===false?'수신 대상 선택 필요':d.hasPairingKey?'꺼짐':'혈압계 등록 필요';
  if(!dirty){$('ssid').value=typeof d.wifiSsid==='string'?d.wifiSsid:'';$('endpoint').value=typeof d.receiverUrl==='string'?d.receiverUrl:'';}
  $('password').placeholder=d.hasSavedPassword?'비워두면 저장된 비밀번호 유지':'Wi-Fi 비밀번호';
  $('token').placeholder=d.hasSavedToken?'비워두면 저장된 토큰 유지':'Google에 등록한 64자리 토큰';controls();
@@ -97,3 +97,39 @@ setInterval(async()=>{
  }finally{polling=false;}
 },3000);
 window.addEventListener('pagehide',()=>{$('password').value='';$('token').value='';void connection.close();});
+
+var audioDirty=false,modelDraft=false;
+function meterControls(){
+ const b=board,enabled=connected&&b?.meterModelSwitchSupported===true&&!busy&&!dirty;
+ for(const id of ['meter-model','meter-confirm'])$(id).disabled=!enabled;
+ if(!modelDraft&&document.activeElement!==$('meter-model')&&!$('meter-confirm').checked)$('meter-model').value=b?.meterModel||'omron-hem7155t';
+ $('apply-model').disabled=!enabled||!$('meter-confirm').checked||b.pending!==0||$('meter-model').value===b.meterModel;
+ $('meter-help').textContent=!connected?'S3 보드를 USB로 연결하세요.':!b.meterModelSwitchSupported?'이 기능은 S3 hem-0.8.0 이상에서 지원합니다.':b.pending?'미전송 기록을 먼저 Google에 저장한 뒤 전환할 수 있습니다.':dirty?'입력 중인 Wi-Fi·토큰 설정을 먼저 저장하세요.':'기록과 시트 링크는 혈압계 종류마다 보관합니다. 전환 후 USB 보드를 다시 선택하고 Google 등록도 확인하세요.';
+ const micro=b?.meterModel==='microlife-b4bt';$('micro-target').hidden=!micro;
+ const select=$('meter-target'),previous=select.value;
+ const targets=[...(b?.meterCandidates||[])];if(b?.targetAddress&&!targets.some(t=>t.address===b.targetAddress))targets.unshift({address:b.targetAddress,name:'저장된 기기'});
+ select.replaceChildren(...targets.map(t=>{const o=document.createElement('option');o.value=t.address;o.textContent=[t.name||'BP B4 BT',t.address,t.rssi===undefined?'':t.rssi+' dBm'].filter(Boolean).join(' · ');return o;}));
+ if(targets.some(t=>t.address===previous))select.value=previous;else if(b?.targetAddress)select.value=b.targetAddress;
+ select.disabled=!enabled;$('target-confirm').disabled=!enabled;
+ $('apply-target').disabled=!enabled||!micro||!select.value||!$('target-confirm').checked||b.pending!==0||(b.remembered>0&&select.value!==b.targetAddress);
+ for(const id of ['audio-volume','save-audio','test-audio'])$(id).disabled=busy||!connected||!b?.audioSupported;
+ if(!audioDirty&&b?.audioSupported)$('audio-volume').value=String(b.audioVolume);
+ $('audio-help').textContent=b?.audioSupported&&!b.audioReady?'스피커 초기화를 확인하지 못했습니다. 기록 수신·전송은 계속됩니다.':'BLE 연결 시 짧은 비프, 시트 저장과 보드의 확인 보관이 끝나면 두 음의 차임입니다. 시험 버튼은 기록을 전송하지 않습니다.';
+}
+$('meter-model').addEventListener('change',()=>{modelDraft=true;});
+for(const id of ['meter-model','meter-confirm','target-confirm','meter-target'])$(id).addEventListener('change',meterControls);
+$('audio-volume').onchange=()=>{audioDirty=true;};
+async function modelAction(operation,fields){return work(async()=>{
+ const before=await connection.read('info');
+ if(before.pending||dirty||!before.queueReady)throw Error('pending_records');
+ const after=await client.request(operation,before,fields,35000);if(after.bridgeId!==before.bridgeId||after.meterId!==before.meterId)throw Error('preservation_failed');
+ await connection.close();connected=false;board=null;modelDraft=false;$('meter-confirm').checked=false;$('target-confirm').checked=false;
+ $('badge').textContent='USB 보드 다시 선택';$('badge').classList.remove('online');$('usb').textContent='재시작 중';
+ notice('저장을 확인했습니다. 재시작 후 ‘USB 보드 선택’을 다시 누르세요. 종류를 바꾸면 별도 보관 기록·시트 링크를 표시하며 Google 기기 등록도 확인해야 합니다.');
+});}
+$('apply-model').onclick=()=>modelAction('meter-model',{model:$('meter-model').value,confirm:'CONFIRM-METER-MODEL-CHANGE'});
+$('apply-target').onclick=()=>modelAction('meter-target',{address:$('meter-target').value,confirm:'CONFIRM-OWN-B4-BT'});
+for(const [id,test] of [['save-audio',false],['test-audio',true]])$(id).onclick=()=>work(async()=>{
+ const before=await connection.read('info');const after=await client.request('audio',before,{volume:Number($('audio-volume').value),test});
+ if(!preserved(before,after))throw Error('preservation_failed');audioDirty=false;state(after);notice(test?'음량을 저장하고 비프·차임 시험을 요청했습니다.':'알림 음량을 저장했습니다.');
+});

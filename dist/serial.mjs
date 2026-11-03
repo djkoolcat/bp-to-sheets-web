@@ -4,9 +4,10 @@ const wait=ms=>new Promise(r=>setTimeout(r,ms));
 const fail=code=>{throw Error(code);};
 export const profiles={esp32c3:{id:'esp32c3-mono',app:0x300000,flash:0x400000},esp32s3:{id:'waveshare-s3-lcd154',app:0x600000,flash:0x1000000}};
 export function reply(d,id,operation){
- if(!d||d.schemaVersion!==1||d.product!=='bp-to-sheets-hem7155t'||d.requestId!==id||d.operation!==operation||
+ if(!d||d.schemaVersion!==1||!['bp-to-sheets-hem7155t','bp-to-sheets-microlife-b4bt'].includes(d.product)||d.requestId!==id||d.operation!==operation||
   !/^esp32-[a-f0-9]{12}$/.test(d.bridgeId)||!/^[a-z0-9][a-z0-9_-]{0,31}$/.test(d.meterId)||
   !/^[a-f0-9]{32}$/.test(d.session)||typeof d.firmwareVersion!=='string'||d.firmwareVersion.length>32||!/^hem-\d+\.\d+\.\d+$/.test(d.firmwareVersion))fail('invalid_usb_reply');
+ meterInfo(d);
  const p=profiles[d.chip];if(!p)fail('unsupported_board');
  if((d.chip==='esp32s3'||d.boardId!==undefined)&&d.boardId!==p.id)fail('unsupported_board');
  if((d.chip==='esp32s3'||d.appPartitionSize!==undefined)&&d.appPartitionSize!==p.app)fail('unsupported_board');
@@ -80,7 +81,7 @@ export class SerialClient{
   const generation=this.generation;
   const run=async()=>{
    if(!this.writer||this.closing||generation!==this.generation)fail('usb_disconnected');
-   if(!['info','configure','test','logs','sheet-link','records'].includes(op))fail('invalid_operation');
+   if(!['info','configure','test','logs','sheet-link','records','meter-model','meter-target','audio'].includes(op))fail('invalid_operation');
    const id=Array.from(crypto.getRandomValues(new Uint8Array(16)),v=>v.toString(16).padStart(2,'0')).join('');
    const payload={schemaVersion:1,requestId:id,operation:op,...fields};if(board){payload.bridgeId=board.bridgeId;payload.session=board.session;}
    const bytes=encoder.encode('BPUSB '+JSON.stringify(payload)+'\n');if(bytes.length>1500)fail('invalid_configuration');
@@ -122,4 +123,17 @@ export class Connection{
    const fresh=await this.recover();return operation==='info'?fresh:this.verify(await this.client.request(operation,null,fields,timeout));}
  }
  async close(){this.enabled=false;++this.generation;await this.client.close();}
+}
+
+export function meterInfo(d){
+ const micro=d.product==='bp-to-sheets-microlife-b4bt';
+ if(micro&&(d.chip!=='esp32s3'||d.meterModel!=='microlife-b4bt'||d.pairingRequired!==false))fail('invalid_usb_reply');
+ if(d.meterModelSwitchSupported!==undefined){
+  if(d.chip!=='esp32s3'||d.meterModelSwitchSupported!==true||!['omron-hem7155t','microlife-b4bt'].includes(d.meterModel)||typeof d.pairingRequired!=='boolean'||micro!==(d.meterModel==='microlife-b4bt'))fail('invalid_usb_reply');
+  if(typeof d.targetAddress!=='string'||(d.targetAddress&&!/^[a-f0-9]{2}(:[a-f0-9]{2}){5}$/.test(d.targetAddress)))fail('invalid_usb_reply');
+  if(!Array.isArray(d.meterCandidates)||d.meterCandidates.length>8)fail('invalid_usb_reply');
+  const ids=new Set();for(const t of d.meterCandidates){if(!t||!/^[a-f0-9]{2}(:[a-f0-9]{2}){5}$/.test(t.address)||ids.has(t.address)||typeof t.name!=='string'||t.name.length>40||!Number.isInteger(t.rssi)||t.rssi>0||t.rssi< -127)fail('invalid_usb_reply');ids.add(t.address);}
+ }
+ if(d.audioSupported!==undefined&&(d.chip!=='esp32s3'||d.audioSupported!==true||typeof d.audioReady!=='boolean'||!Number.isInteger(d.audioVolume)||d.audioVolume<0||d.audioVolume>60))fail('invalid_usb_reply');
+ return d;
 }

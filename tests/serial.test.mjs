@@ -56,3 +56,9 @@ test('Sheet link acknowledgement loss is never replayed as another write',async(
  try{const d=await client.open(p);await assert.rejects(client.request('sheet-link',d,{sheetUrl:'synthetic'},100),/usb_timeout/);assert.equal(p.received.filter(v=>v.operation==='sheet-link').length,1);await client.request('info');assert.equal(p.received.filter(v=>v.operation==='sheet-link').length,1);}
  finally{await client.close();}
 });
+
+test('Microlife capability is S3-only; bounded discovery and volume fields reject forged replies',()=>{
+ const d={...base,requestId:'id',operation:'info',product:'bp-to-sheets-microlife-b4bt',meterModel:'microlife-b4bt',meterModelSwitchSupported:true,pairingRequired:false,targetAddress:'',meterCandidates:[],audioSupported:true,audioReady:true,audioVolume:25};
+ assert.equal(reply(d,'id','info'),d);
+ for(const changes of [{chip:'esp32c3'},{meterModel:'omron-hem7155t'},{pairingRequired:true},{audioVolume:100},{targetAddress:'bad'},{meterCandidates:Array(9).fill({})}])assert.throws(()=>reply({...d,...changes},'id','info'));
+});
