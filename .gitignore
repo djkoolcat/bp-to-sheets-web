@@ -1,0 +1,7 @@
+.openai/
+node_modules/
+*.log
+.DS_Store
+.env*
+private/
+output/
