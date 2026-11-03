@@ -72,7 +72,7 @@ export class SerialClient{
   const generation=this.generation;
   const run=async()=>{
    if(!this.writer||this.closing||generation!==this.generation)fail('usb_disconnected');
-   if(!['info','configure','test','logs','sheet-link'].includes(op))fail('invalid_operation');
+   if(!['info','configure','test','logs','sheet-link','records'].includes(op))fail('invalid_operation');
    const id=Array.from(crypto.getRandomValues(new Uint8Array(16)),v=>v.toString(16).padStart(2,'0')).join('');
    const payload={schemaVersion:1,requestId:id,operation:op,...fields};if(board){payload.bridgeId=board.bridgeId;payload.session=board.session;}
    const bytes=encoder.encode('BPUSB '+JSON.stringify(payload)+'\n');if(bytes.length>1500)fail('invalid_configuration');

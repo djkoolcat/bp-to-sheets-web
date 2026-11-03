@@ -1,11 +1,15 @@
 import {SerialClient,Connection,settings,preserved,event,eventText} from './serial.mjs';
+import {collectRecords,csvBytes,xlsxBytes,fileName} from './record-export.mjs';
 const $=id=>document.getElementById(id);
 let board=null,connected=false,busy=false,dirty=false,polling=false,connection;
 const seen=new Set();
 const messages={invalid_ssid:'Wi-Fi 이름은 1~32바이트로 입력하세요.',invalid_password:'Wi-Fi 비밀번호는 8~63바이트로 입력하세요.',invalid_token:'Google에 등록한 64자리 소문자 토큰을 입력하세요.',invalid_endpoint:'Google Apps Script의 HTTPS /exec 주소를 입력하세요.',usb_timeout:'보드 응답을 확인하지 못했습니다. 설정 저장 결과는 재연결 후 확인하세요.',usb_disconnected:'USB 연결이 끊겼습니다. 보드를 다시 선택해 주세요.',unsupported_board:'이 설정 화면에서 지원하는 보드가 아닙니다.',invalid_usb_reply:'보드 응답을 확인할 수 없습니다. 다른 USB 장치를 선택했는지 확인하세요.',session_changed:'보드가 재시작했습니다. 다시 연결해 주세요.',busy:'보드 작업이 끝난 뒤 다시 시도하세요.',device_busy_timeout:'혈압계 통신이 끝난 뒤 보드를 다시 연결해 주세요.',preservation_failed:'저장 후 기존 기록·설정 확인이 필요합니다. 초기화하지 마세요.',invalid_configuration:'입력값을 확인하세요.',queue_not_ready:'보드 기록 저장소 확인이 필요합니다. 초기화하지 마세요.'};
+Object.assign(messages,{export_update_required:'기록 내보내기는 S3 hem-0.7.0 이상에서 지원합니다. 펌웨어를 먼저 업데이트하세요.',invalid_export_reply:'기록 응답을 끝까지 확인하지 못해 파일을 만들지 않았습니다.',snapshot_changed:'읽는 동안 기록이나 전송 상태가 바뀌었습니다. 잠시 후 다시 저장해 주세요.',export_session_changed:'보드가 재시작하거나 바뀌었습니다. 다시 연결해 주세요.'});
 function notice(text,error=false){$('notice').textContent=text;$('notice').classList.toggle('error',error);}
 function error(e){notice(e.name==='NotFoundError'?'USB 장치 선택을 취소했습니다.':e.name==='SecurityError'||e.name==='NotAllowedError'?'USB 권한을 허용하고 데스크톱 Chrome·Edge의 새 탭에서 다시 열어주세요.':messages[e.message]||'요청을 완료하지 못했습니다. USB 연결과 입력값을 확인해 주세요.',true);}
 function controls(){
+ for(const id of ['export-user','export-csv','export-xlsx'])$(id).disabled=busy||!connected||!board?.queueReady||board?.recordsExportVersion!==1;
+ $('export-help').textContent=!connected?'USB 보드를 연결하면 기록을 파일로 저장할 수 있습니다.':board.recordsExportVersion!==1?'기록 내보내기는 S3 hem-0.7.0 이상에서 지원합니다. 설치형 앱으로 먼저 업데이트하세요.':'보드에 남아 있는 최근 최대 128건입니다. 내려받아도 보드 기록과 전송 대기 상태는 그대로입니다.';
  $('connect').disabled=busy||connected||!supported;$('disconnect').disabled=busy||!connection?.enabled;
  $('fields').disabled=busy||!connected||!board?.queueReady;
  $('test').disabled=busy||!connected||!board?.configured||dirty;
@@ -54,6 +58,21 @@ async function recentHistory(){let after=Math.max(0,board.logNewestSeq-32);for(l
  for(const raw of d.events||[]){const e=event(raw);if(e)addEvent(e);}if(!d.logHasMore)break;if(!Number.isInteger(d.logNextSeq)||d.logNextSeq<=after)throw Error('invalid_usb_reply');after=d.logNextSeq;
 }}
 $('history').onclick=()=>work(async()=>{await recentHistory();notice('보드에 보관된 최근 동작을 읽었습니다.');});
+for(const format of ['csv','xlsx'])$('export-'+format).onclick=()=>work(async()=>{
+ const user=Number($('export-user').value);$('export-status').textContent='보드의 보관 기록을 읽고 있습니다…';
+ try{
+  const data=await collectRecords({user,info:()=>connection.read('info'),page:(fields,before)=>client.request('records',before,fields),progress:(n,total)=>{$('export-status').textContent=`기록 읽는 중 · ${n} / ${total}건`;}});
+  const bytes=format==='csv'?csvBytes(data):xlsxBytes(data),blob=new Blob([bytes],{type:format==='csv'?'text/csv;charset=utf-8':'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'});
+  const url=URL.createObjectURL(blob),link=document.createElement('a');link.href=url;link.download=fileName(format,user);document.body.append(link);
+  try{link.click();}finally{link.remove();setTimeout(()=>URL.revokeObjectURL(url),60000);}
+  $('export-status').textContent=`${data.rows.length}건의 ${format==='csv'?'CSV':'엑셀'} 파일 다운로드를 요청했습니다. 브라우저의 다운로드 목록에서 확인하세요.`;
+  notice('기록 파일을 이 PC에 내려받습니다. 보드의 기록·설정은 유지됩니다.');
+ }catch(e){
+  const changed=['snapshot_changed','export_session_changed','session_changed'].includes(e.message);
+  $('export-status').textContent=changed?'읽는 동안 기록이나 보드 연결 상태가 바뀌었습니다. 파일을 만들지 않았습니다. 잠시 후 다시 눌러주세요.':'기록을 끝까지 확인하지 못해 파일을 만들지 않았습니다. USB 연결을 확인하고 다시 눌러주세요.';
+  notice($('export-status').textContent,true);
+ }
+});
 setInterval(async()=>{
  if(!connection.enabled||!board||busy||polling)return;polling=true;
  const wasConnected=connected,recoveries=connection.recoveries;

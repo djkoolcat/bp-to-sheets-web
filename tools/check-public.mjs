@@ -4,7 +4,7 @@ import {fileURLToPath} from 'node:url';
 import path from 'node:path';
 
 const directory = fileURLToPath(new URL('../dist/', import.meta.url));
-const expected = ['.nojekyll', 'app.mjs', 'index.html', 'serial.mjs', 'style.css'];
+const expected = ['.nojekyll', 'app.mjs', 'index.html', 'serial.mjs', 'record-export.mjs', 'style.css'];
 assert.deepEqual((await readdir(directory)).sort(), expected.toSorted(), 'Unexpected published file');
 const files = {};
 for (const name of expected) {
@@ -23,7 +23,7 @@ assert(/\bsrc="app\.mjs"/.test(scripts[0][1]) && !scripts[0][2].trim(), 'Remote 
 assert(/href="style\.css"/.test(html), 'Use the local stylesheet');
 assert(!/(?:src|href)=["'](?:\/|https?:|\/\/)/i.test(html), 'Assets must work below the GitHub project path');
 
-const javascript = files['app.mjs'] + '\n' + files['serial.mjs'];
+const javascript = files['app.mjs'] + '\n' + files['serial.mjs'] + '\n' + files['record-export.mjs'];
 assert(!/\b(?:fetch|XMLHttpRequest|WebSocket|EventSource|sendBeacon)\s*\(/.test(javascript), 'USB settings must not use a network transport');
 assert(!/\b(?:localStorage|sessionStorage|indexedDB)\b/.test(javascript), 'Do not persist credentials in browser storage');
 const payload = Object.values(files).join('\n');
@@ -36,4 +36,4 @@ const forbidden = [
   /https:\/\/docs\.google\.com\/spreadsheets\/d\/[A-Za-z0-9_-]{20,}/,
 ];
 for (const pattern of forbidden) assert(!pattern.test(payload), 'Private deployment data in public assets');
-console.log('Public assets: 5 local files, project-relative paths, no network settings transport or embedded credentials.');
+console.log('Public assets: 6 local files, project-relative paths, no network data transport or embedded credentials.');
