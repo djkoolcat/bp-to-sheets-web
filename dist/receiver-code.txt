@@ -1,0 +1,494 @@
+/* bp-to-sheets, schema 1. No tokens or measurements are logged. */
+const BP_HEADERS_ = Object.freeze([
+  '측정 일시', '수축기', '이완기', '맥박',
+  '혈압계 식별자', '사용자 슬롯', '수신 일시', 'recordId'
+]);
+const BP_MAX_BODY_ = 24576;
+const BP_MAX_BATCH_ = 16;
+const BP_MAX_ROWS_ = 50000;
+const BP_LOCK_WAIT_MS_ = 5000;
+const BP_SAFE_ID_ = /^[a-z0-9][a-z0-9_-]{0,31}$/;
+const BP_BRIDGE_ID_ = /^esp32-[0-9a-f]{12}$/;
+const BP_TOKEN_ = /^[0-9a-f]{64}$/;
+const BP_ERRORS_ = Object.freeze([
+  'invalid_request', 'authentication_failed', 'configuration_error',
+  'invalid_record', 'conflicting_record', 'busy', 'sheet_missing',
+  'sheet_corrupt', 'sheet_limit', 'storage_error', 'verification_failed'
+]);
+
+/** Public web-app endpoint. Never use an HTTP success code as an ACK. */
+function doPost(e) {
+  const response = {
+    schemaVersion: 1, operation: '', batchId: '', meterId: '',
+    ok: false, acceptedRecordIds: []
+  };
+  let lock = null;
+  let locked = false;
+  let pendingWrites = false;
+  try {
+    const request = parseRequest_(e);
+    response.operation = request.operation;
+    response.batchId = request.batchId;
+    const config = readConfig_();
+    const device = authenticate_(request, config.devices);
+    response.meterId = device.meterId;
+    if(request.operation === "status") {
+      validateStatus_(request.status);
+      lock = LockService.getScriptLock();
+      if(!lock.tryLock(BP_LOCK_WAIT_MS_)) fail_("busy");
+      locked = true;
+      response.acceptedEventSeq = receiveStatus_(request, config);
+      response.ok = true;
+      return json_(response);
+    }
+    const records = validateRecords_(request);
+
+    // ScriptLock protects all users and receiver IDs in this one project.
+    // Authenticate before lock acquisition or any spreadsheet access.
+    lock = LockService.getScriptLock();
+    if (!lock.tryLock(BP_LOCK_WAIT_MS_)) fail_('busy');
+    locked = true;
+    const sheet = SpreadsheetApp.openById(config.spreadsheetId)
+      .getSheetByName(config.sheetName);
+    if (!sheet) fail_('sheet_missing');
+    const before = readRows_(sheet);
+    const receivedAt = new Date().toISOString();
+    const additions = [];
+    records.forEach(function (record) {
+      const existing = before.byId[record.recordId];
+      if (existing) assertSameRow_(existing, record);
+      else additions.push(recordRow_(record, request.meterId, receivedAt));
+    });
+    if (before.count + additions.length > BP_MAX_ROWS_) fail_('sheet_limit');
+    if (additions.length) {
+      const range = sheet.getRange(before.count + 2, 1, additions.length, 8);
+      pendingWrites = true;
+      range.setNumberFormats(additions.map(function () {
+        return ['@', '0', '0', '0', '@', '@', '@', '@'];
+      }));
+      range.setValues(additions);
+    }
+
+    // The rows themselves are the dedupe journal. There is no separate index
+    // that could get out of sync if execution stops after the append.
+    SpreadsheetApp.flush();
+    pendingWrites = false;
+    const after = readRows_(sheet);
+    records.forEach(function (record) {
+      const row = after.byId[record.recordId];
+      if (!row) fail_('verification_failed');
+      assertSameRow_(row, record);
+    });
+    response.acceptedRecordIds = records.map(function (record) {
+      return record.recordId;
+    });
+    response.ok = true;
+  } catch (error) {
+    response.acceptedRecordIds = [];
+    response.error = error && BP_ERRORS_.indexOf(error.bpCode) >= 0
+      ? error.bpCode : 'storage_error';
+  } finally {
+    if (locked) {
+      // An interrupted setValues/flush may still have buffered changes. Try to
+      // drain them before another invocation obtains the lock. This cleanup
+      // never changes a failed response into an ACK.
+      if (pendingWrites) {
+        try { SpreadsheetApp.flush(); } catch (ignored) { /* Retry will verify rows. */ }
+      }
+      try { lock.releaseLock(); } catch (ignored) { /* No sensitive logging. */ }
+    }
+  }
+  return json_(response);
+}
+
+/** GET cannot authenticate, test storage, write rows, or disclose configuration. */
+function doGet() {
+  return json_({schemaVersion: 1, ok: false, error: 'post_required',
+    acceptedRecordIds: []});
+}
+
+/** Run once from the editor after setting Script properties; never from HTTP. */
+function setupSheet() {
+  const config = readConfig_();
+  const lock = LockService.getScriptLock();
+  if (!lock.tryLock(BP_LOCK_WAIT_MS_)) fail_('busy');
+  try {
+    const book = SpreadsheetApp.openById(config.spreadsheetId);
+    let sheet = book.getSheetByName(config.sheetName);
+    if (!sheet) sheet = book.insertSheet(config.sheetName);
+    if (sheet.getLastRow() === 0 && sheet.getLastColumn() === 0) {
+      sheet.getRange(1, 1, 1, 8).setValues([BP_HEADERS_.slice()]);
+      sheet.setFrozenRows(1);
+    }
+    SpreadsheetApp.flush();
+    readRows_(sheet); // Do not overwrite a nonempty or incompatible sheet.
+    return 'ready';
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function parseRequest_(e) {
+  const post = e && e.postData;
+  if (!post || typeof post.contents !== 'string' ||
+      post.contents.length === 0 || post.contents.length > BP_MAX_BODY_ ||
+      (typeof e.contentLength === 'number' && e.contentLength > BP_MAX_BODY_) ||
+      typeof post.type !== 'string' ||
+      !/^application\/json(?:\s*;.*)?$/i.test(post.type)) fail_('invalid_request');
+  let request;
+  try { request = JSON.parse(post.contents); }
+  catch (error) { fail_('invalid_request'); }
+  if (!plainObject_(request) || request.schemaVersion !== 1 ||
+      (request.operation !== 'upload' && request.operation !== 'test' && request.operation !== 'status') ||
+      typeof request.bridgeId !== 'string' ||
+      !BP_BRIDGE_ID_.test(request.bridgeId) ||
+      !safeText_(request.batchId, 96) ||
+      !safeText_(request.firmwareVersion, 32) ||
+      typeof request.meterId !== 'string' || !BP_SAFE_ID_.test(request.meterId) ||
+      typeof request.token !== 'string' || !BP_TOKEN_.test(request.token)) {
+    fail_('invalid_request');
+  }
+  return request;
+}
+
+function safeText_(text, max) {
+  return typeof text === 'string' && text.length > 0 && text.length <= max &&
+    /^[A-Za-z0-9][A-Za-z0-9._:-]*$/.test(text);
+}
+
+function plainObject_(value) {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function readConfig_() {
+  const properties = PropertiesService.getScriptProperties();
+  const spreadsheetId = properties.getProperty('SPREADSHEET_ID');
+  const sheetName = properties.getProperty('SHEET_NAME') || '혈압기록';
+  let devices;
+  try { devices = JSON.parse(properties.getProperty('DEVICES_JSON') || ''); }
+  catch (error) { fail_('configuration_error'); }
+  if (typeof spreadsheetId !== 'string' ||
+      !/^[A-Za-z0-9_-]{20,160}$/.test(spreadsheetId) ||
+      typeof sheetName !== 'string' || sheetName.length > 80 ||
+      /[\\\/\?\*\[\]:]/.test(sheetName) ||
+      !plainObject_(devices) || Object.keys(devices).length === 0) {
+    fail_('configuration_error');
+  }
+  Object.keys(devices).forEach(function (bridgeId) {
+    const device = devices[bridgeId];
+    if (!BP_BRIDGE_ID_.test(bridgeId) || !plainObject_(device) ||
+        typeof device.token !== 'string' || !BP_TOKEN_.test(device.token) ||
+        typeof device.meterId !== 'string' || !BP_SAFE_ID_.test(device.meterId)) {
+      fail_('configuration_error');
+    }
+  });
+  return {spreadsheetId: spreadsheetId, sheetName: sheetName, devices: devices};
+}
+
+function authenticate_(request, devices) {
+  const known = Object.prototype.hasOwnProperty.call(devices, request.bridgeId);
+  const device = known ? devices[request.bridgeId] : null;
+  // Always compare exactly 64 characters, also for unknown receiver IDs.
+  const expected = device ? device.token : '0'.repeat(64);
+  const matches = constantTimeEqual_(request.token, expected);
+  if (!known || !matches || device.meterId !== request.meterId) {
+    fail_('authentication_failed');
+  }
+  return device;
+}
+
+function constantTimeEqual_(left, right) {
+  let difference = left.length ^ right.length;
+  for (let i = 0; i < 64; i++) {
+    difference |= (left.charCodeAt(i) || 0) ^ (right.charCodeAt(i) || 0);
+  }
+  return difference === 0;
+}
+
+function validateRecords_(request) {
+  if (!Array.isArray(request.records) ||
+      (request.operation === 'test' && request.records.length !== 0) ||
+      (request.operation === 'upload' &&
+       (request.records.length < 1 || request.records.length > BP_MAX_BATCH_))) {
+    fail_('invalid_request');
+  }
+  const seen = Object.create(null);
+  const result = [];
+  request.records.forEach(function (record) {
+    validateRecord_(record, request.meterId);
+    if (seen[record.recordId]) {
+      if (seen[record.recordId].flags !== record.flags) {
+        fail_('conflicting_record');
+      }
+    } else {
+      seen[record.recordId] = record;
+      result.push(record);
+    }
+  });
+  return result;
+}
+
+function validateRecord_(record, meterId) {
+  if (plainObject_(record) && typeof record.recordId === 'string' && record.recordId.indexOf('hem1:') === 0) {
+    validateHemRequest_(record, meterId); return;
+  }
+  if (!plainObject_(record) || !validMeasuredAt_(record.measuredAt) ||
+      !integerIn_(record.systolic, 60, 255) ||
+      !integerIn_(record.diastolic, 40, 200) ||
+      record.systolic <= record.diastolic ||
+      !integerIn_(record.pulse, 20, 250) || !integerIn_(record.flags, 0, 65535) ||
+      record.userSlot !== null || typeof record.recordId !== 'string') {
+    fail_('invalid_record');
+  }
+  const stamp = record.measuredAt.slice(0, 16).replace(/[-T:]/g, '');
+  const expected = 'b4v1:' + meterId + ':' + stamp + ':' +
+    record.systolic + ':' + record.diastolic + ':' + record.pulse;
+  if (record.recordId !== expected) fail_('invalid_record');
+}
+
+function integerIn_(value, min, max) {
+  return typeof value === 'number' && Number.isInteger(value) &&
+    value >= min && value <= max;
+}
+
+function validMeasuredAt_(value) {
+  if (typeof value !== 'string' ||
+      !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:00\+09:00$/.test(value)) return false;
+  const year = Number(value.slice(0, 4));
+  const month = Number(value.slice(5, 7));
+  const day = Number(value.slice(8, 10));
+  const hour = Number(value.slice(11, 13));
+  const minute = Number(value.slice(14, 16));
+  if (year < 2020 || year > 2100 || month < 1 || month > 12 ||
+      day < 1 || hour > 23 || minute > 59) return false;
+  return day <= new Date(Date.UTC(year, month, 0)).getUTCDate();
+}
+
+function recordRow_(record, meterId, receivedAt) {
+  // Slot is unknown in the verified B4 protocol, so the column stays blank.
+  // Flags are validated but not persisted in the eight-column user schema.
+  return [record.measuredAt, record.systolic, record.diastolic, record.pulse,
+    meterId, record.userSlot === null ? '' : String(record.userSlot), receivedAt, record.recordId];
+}
+
+function readRows_(sheet) {
+  const lastRow = sheet.getLastRow();
+  if (lastRow < 1 || sheet.getLastColumn() !== 8) fail_('sheet_corrupt');
+  if (lastRow > BP_MAX_ROWS_ + 1) fail_('sheet_limit');
+  const range = sheet.getRange(1, 1, lastRow, 8);
+  const rows = range.getValues();
+  const formulas = range.getFormulas();
+  if (formulas.some(function (row) { return row.some(function (v) { return v !== ''; }); }) ||
+      rows.length !== lastRow ||
+      JSON.stringify(rows[0]) !== JSON.stringify(BP_HEADERS_)) fail_('sheet_corrupt');
+  const byId = Object.create(null);
+  for (let i = 1; i < rows.length; i++) {
+    const row = rows[i];
+    if (!Array.isArray(row) || row.length !== 8 ||
+        typeof row[4] !== 'string' || !BP_SAFE_ID_.test(row[4]) || ['', '1', '2'].indexOf(row[5]) < 0 ||
+        typeof row[6] !== 'string' ||
+        !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(row[6]) ||
+        !Number.isFinite(Date.parse(row[6])) ||
+        new Date(row[6]).toISOString() !== row[6]) fail_('sheet_corrupt');
+    try {
+      const stored = {measuredAt: row[0], systolic: row[1], diastolic: row[2],
+        pulse: row[3], flags: 0, userSlot: row[5] === '' ? null : Number(row[5]), recordId: row[7]};
+      if (typeof stored.recordId === 'string' && stored.recordId.indexOf('hem1:') === 0) validateHemStored_(stored, row[4]);
+      else { if (row[5] !== '') fail_('invalid_record'); validateRecord_(stored, row[4]); }
+    } catch (error) { fail_('sheet_corrupt'); }
+    // Even identical duplicated rows require repair; do not conceal corruption.
+    if (byId[row[7]]) fail_('sheet_corrupt');
+    byId[row[7]] = row;
+  }
+  return {count: rows.length - 1, byId: byId};
+}
+
+function assertSameRow_(row, record) {
+  if (row[0] !== record.measuredAt || row[1] !== record.systolic ||
+      row[2] !== record.diastolic || row[3] !== record.pulse ||
+      row[5] !== (record.userSlot === null ? '' : String(record.userSlot)) || row[7] !== record.recordId) fail_('conflicting_record');
+}
+
+function fail_(code) {
+  const error = new Error(code);
+  error.bpCode = code;
+  throw error;
+}
+
+function json_(object) {
+  return ContentService.createTextOutput(JSON.stringify(object))
+    .setMimeType(ContentService.MimeType.JSON);
+}
+
+
+// HEM-7155T Classic: versioned transport identity, not a manufacturer serial.
+function hemFields_(hex) {
+  if (typeof hex !== 'string' || !/^[0-9a-f]{32}$/.test(hex)) fail_('invalid_record');
+  const b = hex.match(/../g).map(function (v) { return parseInt(v, 16); });
+  if ((b.slice(0, 14).reduce(function (v, n) { return v + n; }, 0) & 255) !== b[14] || b[0] > 225) fail_('invalid_record');
+  const f1 = b[4] | (b[5] << 8), f2 = b[6] | (b[7] << 8);
+  const year = 2000 + (b[3] & 63), month = (f1 >> 10) & 15, day = (f1 >> 5) & 31;
+  const hour = f1 & 31, minute = (f2 >> 6) & 63, second = f2 & 63;
+  if (!hemCalendar_(year, month, day, hour, minute)) fail_('invalid_record');
+  const pad = function (n) { return String(n).padStart(2, '0'); };
+  const stamp = year + '-' + pad(month) + '-' + pad(day) + 'T' + pad(hour) + ':' + pad(minute) +
+    (second < 60 ? ':' + pad(second) : '') + '+09:00';
+  return {measuredAt: stamp, systolic: b[0] + 25, diastolic: b[1], pulse: b[2],
+    flags: ((f1 & 32768) ? 1 : 0) | ((f1 & 16384) ? 2 : 0)};
+}
+function hemCalendar_(y, m, d, h, min) {
+  return y >= 2000 && y <= 2063 && m >= 1 && m <= 12 && d >= 1 &&
+    d <= new Date(Date.UTC(y, m, 0)).getUTCDate() && h >= 0 && h <= 23 && min >= 0 && min <= 59;
+}
+function validateHemStored_(record, meterId) {
+  const id = typeof record.recordId === 'string' && /^hem1:([a-z0-9][a-z0-9_-]{0,31}):([12]):([0-9a-f]{64})$/.exec(record.recordId);
+  const date = typeof record.measuredAt === 'string' && /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2}))?\+09:00$/.exec(record.measuredAt);
+  if (!id || id[1] !== meterId || Number(id[2]) !== record.userSlot || !date ||
+      !hemCalendar_(Number(date[1]), Number(date[2]), Number(date[3]), Number(date[4]), Number(date[5])) ||
+      (date[6] !== undefined && Number(date[6]) > 59) ||
+      !integerIn_(record.systolic, 25, 250) || !integerIn_(record.diastolic, 1, 255) ||
+      record.systolic <= record.diastolic || !integerIn_(record.pulse, 1, 255)) fail_('invalid_record');
+}
+function validateHemRequest_(record, meterId) {
+  validateHemStored_(record, meterId);
+  const fields = hemFields_(record.raw);
+  ['measuredAt', 'systolic', 'diastolic', 'pulse', 'flags'].forEach(function (key) {
+    if (record[key] !== fields[key]) fail_('invalid_record');
+  });
+  const input = 'hem1|' + meterId + '|' + record.userSlot + '|' + record.raw;
+  const hash = Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, input, Utilities.Charset.UTF_8)
+    .map(function (b) { return ((b + 256) & 255).toString(16).padStart(2, '0'); }).join('');
+  if (record.recordId !== 'hem1:' + meterId + ':' + record.userSlot + ':' + hash) fail_('invalid_record');
+}
+
+// Monitoring has its own request/ACK. Measurement write/ACK code above is unchanged.
+const BP_STATUS_HEADERS_ = Object.freeze(['보드 ID','혈압계 ID','펌웨어','현재 상태','마지막 서버 접속','마지막 혈압 수신','마지막 시트 저장','전송 대기','보존 이력','최근 오류','보드 가동 초','로그 저장','누락 로그','마지막 이벤트 순번','최근 수신 결과']);
+const BP_EVENT_HEADERS_ = Object.freeze(['서버 수신 일시','발생 일시','보드 ID','혈압계 ID','eventId','동작','결과','펌웨어','순번','부팅 후 ms']);
+const BP_EVENT_NAMES_ = Object.freeze(['','보드 시작','Wi-Fi 연결','Wi-Fi 연결 대기','시각 동기화','혈압계 감지','기록 수신 시작','기록 수신 완료','기록 수신 실패','기록 큐 저장','Google 전송 시작','Google 저장 확인','Google 전송 실패','설정 저장','업데이트 준비','Wi-Fi 단절 시험','Wi-Fi 복구','로그 이벤트 누락']);
+const BP_OFFLINE_MS_ = 30 * 60 * 1000;
+function statusError_(v) {
+  return typeof v === 'string' && (v === '' || /^(?:invalid_configuration|invalid_local_record|setup_ap_failed|wifi_disconnected|wifi_ssid_not_found|wifi_connection_failed|wifi_test_offline|clock_not_synchronized|authentication_failed|invalid_request|invalid_record|conflicting_record|busy|storage_error|configuration_error|sheet_missing|sheet_corrupt|sheet_limit|verification_failed|local_ack_commit_failed|uploader_busy|response_incomplete|response_too_large|invalid_acknowledgement|invalid_ack_ids|unsolicited_ack_id|no_confirmed_ids|http_begin_failed|redirect_not_allowed|redirect_limit|server_rejected|https_transport_-?[0-9]+_tls_-?[0-9]+|http_[0-9]{3})$/.test(v));
+}
+function validateStatus_(s) {
+  if(!plainObject_(s) || !integerIn_(s.uptimeSeconds,0,4294967) || !integerIn_(s.wifiStatus,0,255) ||
+     typeof s.queueReady !== 'boolean' || typeof s.logReady !== 'boolean' || typeof s.readFailed !== 'boolean' ||
+     !integerIn_(s.pending,0,10000) || !integerIn_(s.remembered,0,10000) || s.pending>s.remembered ||
+     !statusError_(s.error) || !integerIn_(s.lastReadAt,0,4294967295) || !integerIn_(s.lastSavedAt,0,4294967295) ||
+     !integerIn_(s.logDropped,0,4294967295) || !integerIn_(s.reportedSeq,0,4294967295) ||
+     !integerIn_(s.newestSeq,s.reportedSeq,4294967295) || !Array.isArray(s.events) || s.events.length>8) fail_('invalid_request');
+  let previous=s.reportedSeq;
+  s.events.forEach(function(e){
+    if(!plainObject_(e) || !integerIn_(e.seq,previous+1,s.newestSeq) || !integerIn_(e.boot,0,65535) ||
+       !integerIn_(e.code,1,17) || !integerIn_(e.uptimeMs,0,4294967295) || !integerIn_(e.epoch,0,4294967295) ||
+       !integerIn_(e.a,-2147483648,2147483647) || !integerIn_(e.b,-2147483648,2147483647)) fail_('invalid_request');
+    previous=e.seq;
+  });
+}
+function monitorTable_(book,name,headers,create) {
+  let sheet=book.getSheetByName(name);
+  if(!sheet&&create)sheet=book.insertSheet(name);
+  if(!sheet)fail_('sheet_missing');
+  if(sheet.getLastRow()===0&&create){sheet.getRange(1,1,1,headers.length).setNumberFormat('@').setValues([headers.slice()]);sheet.setFrozenRows(1);}
+  if(sheet.getLastColumn()!==headers.length)fail_('sheet_corrupt');
+  const n=sheet.getLastRow();if(n<1||n>100001)fail_('sheet_limit');
+  const range=sheet.getRange(1,1,n,headers.length),rows=range.getValues();
+  if(JSON.stringify(rows[0])!==JSON.stringify(headers)||range.getFormulas().some(r=>r.some(v=>v!=='')))fail_('sheet_corrupt');
+  return {sheet:sheet,rows:rows};
+}
+function monitorWrite_(sheet,row,values){sheet.getRange(row,1,1,values.length).setNumberFormat('@').setValues([values]);}
+function eventDetail_(e){
+  if(e.code===9)return '대기 '+e.a+'건 / 보존 '+e.b+'건';
+  if(e.code===10)return e.b?'기록 없는 연결 시험':e.a+'건 전송';
+  if(e.code===11)return '저장 확인 '+e.a+'건 / 대기 '+e.b+'건';
+  if(e.code===12){const reasons=['전송 실패','기기 인증 실패','HTTPS 통신 실패','시각 동기화 대기','HTTP 응답 오류','서버 저장 확인 실패','보드 확인 상태 저장 실패','상태 보고 실패'];return (reasons[e.a]||reasons[0])+' · 대기 '+e.b+'건 유지';}
+  if(e.code===1)return '보드 시작 · 재시작 원인 코드 '+e.a;
+  if(e.code===2)return '저장된 Wi-Fi 연결';
+  if(e.code===3)return 'Wi-Fi 상태 '+e.a;
+  if(e.code===4)return 'ESP32 시각 동기화 확인';
+  if(e.code===5)return '자동 연결 시도 '+e.a+'회';
+  if(e.code===6)return e.b+'회 반복 읽기 검증 시작';
+  if(e.code===7)return '원본 기록·카운터 유지 확인 후 수신 완료';
+  if(e.code===8)return '수신 실패 · 원본 유지, 다음 연결에서 재시도';
+  if(e.code===13)return 'USB로 보드 설정 저장';
+  if(e.code===14)return '앱 영역 업데이트 준비 · 설정과 기록 보존';
+  if(e.code===15)return 'ESP32 Wi-Fi만 '+e.a+'초 중단';
+  if(e.code===16)return e.a?'제한 시간 만료 · 자동 Wi-Fi 복구':'저장 설정으로 Wi-Fi 복구';
+  if(e.code===17)return '누락 '+e.a+'건';
+  return 'a='+e.a+', b='+e.b;
+}
+function epochText_(v){return v?new Date(v*1000).toISOString():'';}
+function stateName_(s){return !s.queueReady?'저장장치 오류':s.error?'장애':s.readFailed?'수신 장애':s.pending?'전송 대기':!s.logReady?'로그 저장 오류':'정상';}
+function eventRows_(table,bridge){
+  const ids=Object.create(null);table.rows.slice(1).forEach(function(r){if(typeof r[4]!=='string'||!r[4]||ids[r[4]])fail_('sheet_corrupt');ids[r[4]]=r;});return ids;
+}
+function receiveStatus_(request,config){
+  const book=SpreadsheetApp.openById(config.spreadsheetId);
+  const status=monitorTable_(book,'기기상태',BP_STATUS_HEADERS_,false),history=monitorTable_(book,'장애이력',BP_EVENT_HEADERS_,false);
+  const s=request.status,now=new Date().toISOString();
+  const matches=status.rows.map((r,i)=>i>0&&r[0]===request.bridgeId?i:-1).filter(i=>i>0);
+  if(matches.length>1)fail_('sheet_corrupt');
+  const index=matches.length?matches[0]:status.rows.length,old=matches.length?status.rows[index]:null;
+  if(old&&old[1]!==request.meterId)fail_('sheet_corrupt');
+  const watermark=old?Number(old[13]):0;if(!integerIn_(watermark,0,4294967295))fail_('sheet_corrupt');
+  const ids=eventRows_(history,request.bridgeId),additions=[];
+  s.events.forEach(function(e){
+    if(e.seq<=watermark)return;
+    const id=request.bridgeId+':'+e.seq;
+    const row=[now,epochText_(e.epoch),request.bridgeId,request.meterId,id,BP_EVENT_NAMES_[e.code],eventDetail_(e),request.firmwareVersion,e.seq,e.uptimeMs];
+    if(ids[id]){const existing=ids[id];if(JSON.stringify(existing.slice(1,7).concat(existing.slice(8)))!==JSON.stringify(row.slice(1,7).concat(row.slice(8))))fail_('conflicting_record');}
+    else{additions.push(row);ids[id]=row;}
+  });
+  if(old&&old[3]==='응답 없음'){
+    const id='recovered:'+request.bridgeId+':'+old[4];
+    if(!ids[id])additions.push([now,now,request.bridgeId,request.meterId,id,'연결 복구','상태 보고 재개',request.firmwareVersion,'','']);
+  }
+  if(additions.length)history.sheet.getRange(history.rows.length+1,1,additions.length,10).setNumberFormat('@').setValues(additions);
+  SpreadsheetApp.flush();
+  const readback=monitorTable_(book,'장애이력',BP_EVENT_HEADERS_,false),saved=eventRows_(readback,request.bridgeId);
+  additions.forEach(r=>{if(!saved[r[4]]||JSON.stringify(saved[r[4]])!==JSON.stringify(r))fail_('verification_failed');});
+  const accepted=s.events.length?s.events[s.events.length-1].seq:s.reportedSeq;
+  const row=[request.bridgeId,request.meterId,request.firmwareVersion,stateName_(s),now,epochText_(s.lastReadAt),epochText_(s.lastSavedAt),s.pending,s.remembered,s.error,s.uptimeSeconds,s.logReady?'정상':'오류',s.logDropped,Math.max(watermark,accepted),s.readFailed?'실패':s.lastReadAt?'성공':'미확인'];
+  // Keep known successful times when a rebooted device has no surviving event timestamp.
+  if(old){if(!row[5])row[5]=old[5];if(!row[6])row[6]=old[6];}
+  monitorWrite_(status.sheet,index+1,row);SpreadsheetApp.flush();
+  const checked=status.sheet.getRange(index+1,1,1,row.length).getValues()[0];
+  if(JSON.stringify(checked)!==JSON.stringify(row))fail_('verification_failed');
+  trimMonitor_(history.sheet,request.bridgeId);
+  return accepted;
+}
+function trimMonitor_(sheet,bridge){
+  const n=sheet.getLastRow();if(n<=2001)return;
+  const rows=sheet.getRange(2,1,n-1,10).getValues();let remove=rows.reduce((v,r)=>v+(r[2]===bridge?1:0),0)-2000;
+  const indices=[];for(let i=0;i<rows.length&&remove>0;++i)if(rows[i][2]===bridge){indices.push(i+2);--remove;}
+  // Delete only log rows, descending, coalescing adjacent ranges.
+  for(let i=indices.length-1;i>=0;){const end=indices[i];let start=end;while(i>0&&indices[i-1]===start-1){--i;--start;}sheet.deleteRows(start,end-start+1);--i;}
+}
+/** Editor-only initialization. Does not read or modify the measurement tab. */
+function setupMonitoring(){
+  const config=readConfig_(),lock=LockService.getScriptLock();if(!lock.tryLock(BP_LOCK_WAIT_MS_))fail_('busy');
+  try{
+    const book=SpreadsheetApp.openById(config.spreadsheetId);
+    monitorTable_(book,'기기상태',BP_STATUS_HEADERS_,true);monitorTable_(book,'장애이력',BP_EVENT_HEADERS_,true);SpreadsheetApp.flush();
+    return 'monitoring_ready';
+  }finally{lock.releaseLock();}
+}
+/** Editor-only: one clock trigger, as the owner, every 5 minutes. */
+function installMonitoringTrigger(){
+  setupMonitoring();
+  if(!ScriptApp.getProjectTriggers().some(t=>t.getHandlerFunction()==='checkDeviceHealth'))ScriptApp.newTrigger('checkDeviceHealth').timeBased().everyMinutes(5).create();
+  return 'monitoring_trigger_ready';
+}
+function checkDeviceHealth(){
+  const config=readConfig_(),lock=LockService.getScriptLock();if(!lock.tryLock(BP_LOCK_WAIT_MS_))return;
+  try{
+    const book=SpreadsheetApp.openById(config.spreadsheetId),status=monitorTable_(book,'기기상태',BP_STATUS_HEADERS_,false),history=monitorTable_(book,'장애이력',BP_EVENT_HEADERS_,false);
+    const ids=eventRows_(history),now=new Date(),stamp=now.toISOString();
+    status.rows.slice(1).forEach(function(row,i){
+      if(!Object.prototype.hasOwnProperty.call(config.devices,row[0])||config.devices[row[0]].meterId!==row[1])return;
+      const last=Date.parse(row[4]);if(!Number.isFinite(last)||now.getTime()-last<BP_OFFLINE_MS_||row[3]==='응답 없음')return;
+      const id='offline:'+row[0]+':'+row[4];
+      if(!ids[id]){const r=[stamp,stamp,row[0],row[1],id,'응답 없음','30분 이상 상태 보고 없음 · 전원/네트워크/서버 원인 미확정',row[2],'',''];monitorWrite_(history.sheet,history.sheet.getLastRow()+1,r);ids[id]=r;}
+      SpreadsheetApp.flush();row[3]='응답 없음';monitorWrite_(status.sheet,i+2,row);trimMonitor_(history.sheet,row[0]);
+    });SpreadsheetApp.flush();
+  }finally{lock.releaseLock();}
+}

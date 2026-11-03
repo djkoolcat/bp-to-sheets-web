@@ -4,7 +4,7 @@ import {fileURLToPath} from 'node:url';
 import path from 'node:path';
 
 const directory = fileURLToPath(new URL('../dist/', import.meta.url));
-const expected = ['.nojekyll', 'app.mjs', 'index.html', 'serial.mjs', 'record-export.mjs', 'style.css'];
+const expected = ['.nojekyll', 'app.mjs', 'index.html', 'serial.mjs', 'record-export.mjs', 'setup.mjs', 'wizard.mjs', 'receiver-code.txt', 'receiver-manifest.json', 'style.css'];
 assert.deepEqual((await readdir(directory)).sort(), expected.toSorted(), 'Unexpected published file');
 const files = {};
 for (const name of expected) {
@@ -21,9 +21,14 @@ const scripts = [...html.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script>/gi)];
 assert.equal(scripts.length, 1, 'Use only the local application script');
 assert(/\bsrc="app\.mjs"/.test(scripts[0][1]) && !scripts[0][2].trim(), 'Remote or inline script');
 assert(/href="style\.css"/.test(html), 'Use the local stylesheet');
-assert(!/(?:src|href)=["'](?:\/|https?:|\/\/)/i.test(html), 'Assets must work below the GitHub project path');
+assert(!/<(?:script|link|img)\b[^>]*(?:src|href)=["'](?:\/|https?:|\/\/)/i.test(html), 'Assets must work below the GitHub project path');
+const external = new Set(['https://sheets.google.com/create','https://script.google.com/home','https://developers.google.com/apps-script/guides/web']);
+for(const match of html.matchAll(/<a\b[^>]*href="(https?:[^\"]+)"[^>]*>/g)){
+  assert(external.has(match[1]), 'Unreviewed external navigation');
+  assert(match[0].includes('target="_blank"')&&match[0].includes('rel="noopener noreferrer"'), 'External link must not expose page context');
+}
 
-const javascript = files['app.mjs'] + '\n' + files['serial.mjs'] + '\n' + files['record-export.mjs'];
+const javascript = expected.filter(f=>f.endsWith('.mjs')).map(f=>files[f]).join('\n');
 assert(!/\b(?:fetch|XMLHttpRequest|WebSocket|EventSource|sendBeacon)\s*\(/.test(javascript), 'USB settings must not use a network transport');
 assert(!/\b(?:localStorage|sessionStorage|indexedDB)\b/.test(javascript), 'Do not persist credentials in browser storage');
 const payload = Object.values(files).join('\n');
@@ -36,4 +41,5 @@ const forbidden = [
   /https:\/\/docs\.google\.com\/spreadsheets\/d\/[A-Za-z0-9_-]{20,}/,
 ];
 for (const pattern of forbidden) assert(!pattern.test(payload), 'Private deployment data in public assets');
-console.log('Public assets: 6 local files, project-relative paths, no network data transport or embedded credentials.');
+assert.equal(JSON.parse(files['receiver-manifest.json']).runtimeVersion,'V8');
+console.log('Public assets: 10 reviewed local files, no network data transport or embedded credentials. Google links are explicit navigation only.');

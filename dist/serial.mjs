@@ -1,3 +1,4 @@
+import {sheetUrl,userSheetUrls} from './setup.mjs';
 const encoder=new TextEncoder();
 const wait=ms=>new Promise(r=>setTimeout(r,ms));
 const fail=code=>{throw Error(code);};
@@ -10,6 +11,13 @@ export function reply(d,id,operation){
  if((d.chip==='esp32s3'||d.boardId!==undefined)&&d.boardId!==p.id)fail('unsupported_board');
  if((d.chip==='esp32s3'||d.appPartitionSize!==undefined)&&d.appPartitionSize!==p.app)fail('unsupported_board');
  if((d.chip==='esp32s3'||d.flashSize!==undefined)&&d.flashSize!==p.flash)fail('unsupported_board');
+ if(d.sheetLinkSupported!==undefined&&typeof d.sheetLinkSupported!=='boolean')fail('invalid_usb_reply');
+ if(d.sheetLinkSupported&&(typeof d.sheetUrl!=='string'||(d.sheetUrl!==''&&sheetUrl(d.sheetUrl)!==d.sheetUrl)))fail('invalid_usb_reply');
+ if(d.sheetUserLinksSupported!==undefined&&typeof d.sheetUserLinksSupported!=='boolean')fail('invalid_usb_reply');
+ if(d.sheetUserLinksSupported){
+  if(d.chip!=='esp32s3'||!d.sheetLinkSupported||!Array.isArray(d.sheetUserUrls)||d.sheetUserUrls.length!==2||d.sheetUserUrls[0]!==d.sheetUrl||d.sheetUserUrls.some(u=>typeof u!=='string'||(u!==''&&sheetUrl(u)!==u)))fail('invalid_usb_reply');
+  if(d.sheetUserUrls[1]){try{userSheetUrls(d.sheetUserUrls);}catch{fail('invalid_usb_reply');}}
+ }
  for(const k of ['ok','queueReady','hasPairingKey','autoEnabled','configured','hasSavedPassword','hasSavedToken','clockReady','sending'])if(typeof d[k]!=='boolean')fail('invalid_usb_reply');
  if(!Number.isInteger(d.pending)||d.pending<0||d.pending>128||!Number.isInteger(d.remembered)||d.remembered<d.pending||d.remembered>128||!Number.isInteger(d.wifiStatus))fail('invalid_usb_reply');
  if(!d.ok)fail(typeof d.error==='string'&&/^[a-z0-9_-]{1,80}$/.test(d.error)?d.error:'usb_rejected');
@@ -24,7 +32,7 @@ export function settings(v,b){
  try{const u=new URL(endpoint);if(endpoint.length>256||u.protocol!=='https:'||u.hostname!=='script.google.com'||u.port||u.username||u.password||u.search||u.hash||!/^\/macros\/s\/[A-Za-z0-9_-]+\/exec$/.test(u.pathname))fail('invalid_endpoint');}catch{fail('invalid_endpoint');}
  return {ssid,password,endpoint,token,keepPassword,keepToken};
 }
-export function preserved(a,b){return b.queueReady&&a.chip===b.chip&&a.bridgeId===b.bridgeId&&a.meterId===b.meterId&&b.remembered>=a.remembered&&['hasPairingKey','autoEnabled'].every(k=>a[k]===b[k]);}
+export function preserved(a,b){return b.queueReady&&a.chip===b.chip&&a.bridgeId===b.bridgeId&&a.meterId===b.meterId&&b.remembered>=a.remembered&&['hasPairingKey','autoEnabled'].every(k=>a[k]===b[k])&&(!a.sheetLinkSupported||(b.sheetLinkSupported&&a.sheetUrl===b.sheetUrl))&&(!a.sheetUserLinksSupported||(b.sheetUserLinksSupported&&JSON.stringify(a.sheetUserUrls)===JSON.stringify(b.sheetUserUrls)));}
 export function event(d){
  if(!d||!Number.isInteger(d.code)||d.code<1||d.code>17)return null;
  for(const k of ['seq','boot','uptimeMs','epoch','a','b'])if(!Number.isInteger(d[k]))return null;

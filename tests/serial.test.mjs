@@ -50,3 +50,9 @@ test('Reconnect cannot request a new grant, replay a write, or reopen after expl
   await connection.close();await assert.rejects(connection.read('info',{},60),/usb_disconnected/);assert(!p.opened);
  }finally{await connection.close();}
 });
+
+test('Sheet link acknowledgement loss is never replayed as another write',async()=>{
+ const p=new Port({drop:'sheet-link'}),client=new SerialClient();
+ try{const d=await client.open(p);await assert.rejects(client.request('sheet-link',d,{sheetUrl:'synthetic'},100),/usb_timeout/);assert.equal(p.received.filter(v=>v.operation==='sheet-link').length,1);await client.request('info');assert.equal(p.received.filter(v=>v.operation==='sheet-link').length,1);}
+ finally{await client.close();}
+});
