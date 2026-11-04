@@ -1,14 +1,15 @@
-import {createOmronSetup,setupAction,errors as omronErrors} from './omron-setup.mjs?v=0.9.2';
-import {SerialClient,Connection,settings,preserved,event,eventText} from './serial.mjs?v=0.9.2';
-import {collectRecords,csvBytes,xlsxBytes,fileName} from './record-export.mjs?v=0.9.2';
-import {createWizard} from './wizard.mjs?v=0.9.2';
-import {userSheetUrls,linksPreserved} from './setup.mjs?v=0.9.2';
-import {release} from './firmware-catalog.mjs?v=0.9.2';
-import {compatible,compareVersion} from './firmware-policy.mjs?v=0.9.2';
-import {FirmwareUpdate} from './firmware-update.mjs?v=0.9.2';
-import {InitialInstall} from './initial-install.mjs?v=0.9.2';
+import {createOmronSetup,setupAction,errors as omronErrors} from './omron-setup.mjs?v=1.0.0';
+import {SerialClient,Connection,settings,preserved,event,eventText} from './serial.mjs?v=1.0.0';
+import {collectRecords,csvBytes,xlsxBytes,fileName} from './record-export.mjs?v=1.0.0';
+import {createWizard} from './wizard.mjs?v=1.0.0';
+import {userSheetUrls,linksPreserved} from './setup.mjs?v=1.0.0';
+import {release} from './firmware-catalog.mjs?v=1.0.0';
+import {compatible,compareVersion} from './firmware-policy.mjs?v=1.0.0';
+import {FirmwareUpdate} from './firmware-update.mjs?v=1.0.0';
+import {InitialInstall} from './initial-install.mjs?v=1.0.0';
+import {FactoryReset,resetSupported} from './factory-reset.mjs?v=1.0.0';
 const $=id=>document.getElementById(id);
-let board=null,connected=false,busy=false,dirty=false,polling=false,connection,wizard,updater,installer,omron;
+let board=null,connected=false,busy=false,dirty=false,polling=false,connection,wizard,updater,installer,omron,resetter;
 const seen=new Set();
 const messages={invalid_ssid:'Wi-Fi 이름은 1~32바이트로 입력하세요.',invalid_password:'Wi-Fi 비밀번호는 8~63바이트로 입력하세요.',invalid_token:'Google에 등록한 64자리 소문자 토큰을 입력하세요.',invalid_endpoint:'Google Apps Script의 HTTPS /exec 주소를 입력하세요.',usb_timeout:'보드 응답을 확인하지 못했습니다. 설정 저장 결과는 재연결 후 확인하세요.',usb_disconnected:'USB 연결이 끊겼습니다. 보드를 다시 선택해 주세요.',unsupported_board:'이 설정 화면에서 지원하는 보드가 아닙니다.',invalid_usb_reply:'보드 응답을 확인할 수 없습니다. 다른 USB 장치를 선택했는지 확인하세요.',session_changed:'보드가 재시작했습니다. 다시 연결해 주세요.',busy:'보드 작업이 끝난 뒤 다시 시도하세요.',device_busy_timeout:'혈압계 통신이 끝난 뒤 보드를 다시 연결해 주세요.',preservation_failed:'저장 후 기존 기록·설정 확인이 필요합니다. 초기화하지 마세요.',invalid_configuration:'입력값을 확인하세요.',queue_not_ready:'보드 기록 저장소 확인이 필요합니다. 초기화하지 마세요.'};
 Object.assign(messages,{export_update_required:'기록 내보내기는 S3 hem-0.7.0 이상에서 지원합니다. 펌웨어를 먼저 업데이트하세요.',invalid_export_reply:'기록 응답을 끝까지 확인하지 못해 파일을 만들지 않았습니다.',snapshot_changed:'읽는 동안 기록이나 전송 상태가 바뀌었습니다. 잠시 후 다시 저장해 주세요.',export_session_changed:'보드가 재시작하거나 바뀌었습니다. 다시 연결해 주세요.'});
@@ -17,10 +18,11 @@ Object.assign(messages,{firmware_manifest:'배포 정보가 올바르지 않습�
 function notice(text,error=false){$('notice').textContent=text;$('notice').classList.toggle('error',error);}
 function error(e){notice(e.name==='NotFoundError'?'USB 장치 선택을 취소했습니다.':e.name==='SecurityError'||e.name==='NotAllowedError'?'USB 권한을 허용하고 데스크톱 Chrome·Edge의 새 탭에서 다시 열어주세요.':omronErrors[e.message]||messages[e.message]||'요청을 완료하지 못했습니다. USB 연결과 입력값을 확인해 주세요.',true);}
 function controls(){
- const locked=busy||!!installer?.active||!!omron?.active();
+ const locked=busy||!!installer?.active||!!omron?.active()||!!resetter?.active||!!resetter?.recoverable;
  for(const id of ['export-user','export-csv','export-xlsx'])$(id).disabled=locked||!connected||!board?.queueReady||board?.recordsExportVersion!==1;
  $('export-help').textContent=!connected?'USB 보드를 연결하면 기록을 파일로 저장할 수 있습니다.':board.recordsExportVersion!==1?'기록 내보내기는 S3 hem-0.7.0 이상에서 지원합니다. 아래에서 펌웨어를 업데이트하세요.':'보드에 남아 있는 최근 최대 128건입니다. 내려받아도 보드 기록과 전송 대기 상태는 그대로입니다.';
  $('connect').disabled=locked||connected||!supported;$('disconnect').disabled=locked||!connection?.enabled;
+ resetControls();
  $('fields').disabled=locked||!connected||!board?.queueReady;
  $('test').disabled=locked||!connected||!board?.configured||dirty;
  $('history').disabled=locked||!connected||!Number.isInteger(board?.logNewestSeq);
@@ -57,6 +59,7 @@ const client=new SerialClient({onEvent:e=>{addEvent(e);if(connected)wizard?.even
 connection=new Connection(client,{getPorts:()=>navigator.serial.getPorts()});
 updater=new FirmwareUpdate({connection,client,getPorts:()=>navigator.serial.getPorts(),progress:(stage,percent)=>{$('firmware-progress').hidden=false;$('firmware-progress').value=percent;$('firmware-status').textContent=stage+(stage==='업데이트 중'?` · ${percent}%`:'');}});
 installer=new InitialInstall({connection,getPorts:()=>navigator.serial.getPorts(),progress:(stage,percent)=>{$('initial-progress').hidden=false;$('initial-progress').value=percent;$('initial-status').textContent=stage+(stage==='처음 설치 중'?` · ${percent}%`:'');initialControls();}});
+resetter=new FactoryReset({connection,client,getPorts:()=>navigator.serial.getPorts(),progress:(stage,percent)=>{$('reset-progress').hidden=false;$('reset-progress').value=percent;$('reset-status').textContent=stage+(stage==='보드 사용자 데이터 초기화 중'?` · ${percent}%`:'');}});
 const supported=isSecureContext&&'serial'in navigator;$('unsupported').hidden=supported;
 async function work(run){if(busy||installer?.active)return;busy=true;controls();try{while(polling)await new Promise(r=>setTimeout(r,20));await run();}catch(e){error(e);}finally{busy=false;controls();}}
 wizard=createWizard({getState:()=>({board,connected,busy:busy||!!installer?.active||!!omron?.active(),dirty}),tokenChanged:()=>{dirty=true;controls();},test:()=>runTest(),refresh:()=>work(async()=>{state(await connection.read('info'));notice('보드의 현재 등록 상태와 저장 정보를 다시 읽었습니다.');}),notice});
@@ -83,7 +86,7 @@ async function updateFirmware(retry=false){return work(async()=>{
  }
 });}
 $('firmware-start').onclick=()=>updateFirmware();$('firmware-retry').onclick=()=>updateFirmware(true);
-window.addEventListener('beforeunload',e=>{if(updater?.recoverable||installer?.active){e.preventDefault();e.returnValue='';}});
+window.addEventListener('beforeunload',e=>{if(updater?.recoverable||installer?.active||resetter?.active||resetter?.recoverable){e.preventDefault();e.returnValue='';}});
 $('connect').onclick=()=>work(async()=>{
  const port=await navigator.serial.requestPort({filters:[{usbVendorId:0x303a},{usbVendorId:0x1a86},{usbVendorId:0x10c4},{usbVendorId:0x0403}]});
  notice('보드 버전과 기록 보관 상태를 확인하고 있습니다…');const d=await connection.attach(port);board=d;connected=true;dirty=false;seen.clear();$('events').replaceChildren();
@@ -211,3 +214,34 @@ $('initial-setup').onclick=()=>{wizard.openBoard();$('wizard').scrollIntoView({b
 for(const a of document.querySelectorAll('.initial-link'))a.addEventListener('click',()=>{$('initial-panel').open=true;});
 
 if(location.hash==='#initial-card')$('initial-panel').open=true;
+
+function resetControls(){
+ const previous=$('reset-board').textContent,id=resetter?.recoverable?resetter.before?.bridgeId:board?.bridgeId;
+ $('reset-board').textContent=id||'USB 연결 후 표시';
+ $('reset-meter').textContent=board?.meterId||'—';
+ if(previous!==$('reset-board').textContent){$('reset-confirmation').value='';$('reset-loss').checked=false;}
+ $('reset-counts').textContent=board?`보관 ${board.remembered}건 · 미전송 ${board.pending}건 · 다른 혈압계 종류의 보관분도 삭제`:'—';
+ const locked=busy||!!installer?.active||!!omron?.active()||!!updater?.recoverable||!!resetter?.active;
+ const confirmed=!!id&&$('reset-confirmation').value.trim()===id&&$('reset-loss').checked;
+ $('reset-start').disabled=locked||!connected||dirty||!board?.queueReady||!resetSupported(board)||!confirmed||!!resetter?.recoverable;
+ $('reset-retry').hidden=!resetter?.recoverable;$('reset-retry').disabled=locked||!confirmed;
+}
+Object.assign(messages,{reset_update_required:'기기 초기화는 정상 응답하는 S3 hem-1.0.0 이상에서 지원합니다. 먼저 펌웨어를 업데이트하세요.',reset_confirmation:'보드 ID를 정확히 입력하고 데이터 삭제 확인란을 선택하세요.',reset_not_empty:'초기화 후 비어 있는 상태를 확인하지 못했습니다. 자동으로 다시 지우지 않습니다. USB 연결과 보드 상태를 확인하세요.',reset_recovery_pending:'진행하던 초기화 확인을 먼저 마쳐주세요.'});
+for(const id of ['reset-confirmation','reset-loss'])$(id).addEventListener('input',resetControls);
+async function factoryReset(retry=false){return work(async()=>{
+ const confirmation={confirmation:$('reset-confirmation').value,acknowledgeLoss:$('reset-loss').checked};
+ try{
+  let after;
+  if(retry){const port=await navigator.serial.requestPort({filters:[{usbVendorId:0x303a}]});after=await resetter.retry(port,confirmation);}
+  else after=await resetter.start(board,confirmation);
+  connected=true;dirty=false;seen.clear();$('events').replaceChildren();
+  for(const id of ['ssid','password','endpoint','token','sheet-user-1','sheet-user-2','reset-confirmation'])$(id).value='';
+  $('reset-loss').checked=false;state(after);$('badge').textContent='USB 연결됨';$('badge').classList.add('online');$('usb').textContent='초기화 후 연결됨';
+  notice('보드 사용자 데이터 초기화와 펌웨어 유지를 확인했습니다. 처음 설정 안내에서 다시 시작하세요. 혈압계 원본과 Google 시트는 유지됩니다.');
+ }catch(e){
+  connected=connection.enabled&&!!client.writer;
+  $('reset-status').textContent=(e.message==='preservation_failed'?'펌웨어·저장 영역 검증에 실패했습니다. 자동으로 다시 지우지 않습니다. 보드 상태를 확인하세요.':messages[e.message])||'초기화 확인이 중단됐습니다. 페이지와 USB 케이블을 유지하세요. 요청을 자동 반복하지 않습니다.';
+  $('reset-confirmation').value='';$('reset-loss').checked=false;throw e;
+ }
+});}
+$('reset-start').onclick=()=>factoryReset();$('reset-retry').onclick=()=>factoryReset(true);

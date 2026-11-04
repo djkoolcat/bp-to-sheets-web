@@ -1,5 +1,5 @@
-import {validateSetup} from './omron-setup.mjs?v=0.9.2';
-import {sheetUrl,userSheetUrls} from './setup.mjs?v=0.9.2';
+import {validateSetup} from './omron-setup.mjs?v=1.0.0';
+import {sheetUrl,userSheetUrls} from './setup.mjs?v=1.0.0';
 const encoder=new TextEncoder();
 const wait=ms=>new Promise(r=>setTimeout(r,ms));
 const fail=code=>{throw Error(code);};

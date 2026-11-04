@@ -1,4 +1,4 @@
-import {deviceProperties,sheetId,userSheetUrls} from './setup.mjs?v=0.9.2';
+import {deviceProperties,sheetId,userSheetUrls} from './setup.mjs?v=1.0.0';
 const fail=code=>{throw Error(code);};
 export function googleRegistration(board,token,setupId){
  deviceProperties('',board,token); // Reuse strict board/managed-ID/token checks.

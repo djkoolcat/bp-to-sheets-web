@@ -5,9 +5,12 @@ import {release} from '../dist/firmware-catalog.mjs';
 import {initialImages} from '../dist/initial-catalog.mjs';
 import {fileURLToPath} from 'node:url';
 import path from 'node:path';
+const webVersion=JSON.parse(await readFile(new URL('../package.json',import.meta.url),'utf8')).version;
+assert(/^\d+\.\d+\.\d+$/.test(webVersion)&&release.version==='hem-'+webVersion,'Web and firmware release versions differ');
+const firmwareFile=`firmware/s3-${webVersion}.mjs`;
 
 const directory = fileURLToPath(new URL('../dist/', import.meta.url));
-const expected = ['.nojekyll', 'app.mjs', 'index.html', 'serial.mjs', 'record-export.mjs', 'setup.mjs', 'wizard.mjs', 'omron-setup.mjs', 'receiver-code.txt', 'receiver-source.mjs', 'google-setup.mjs', 'receiver-manifest.json', 'style.css','firmware-catalog.mjs','firmware-policy.mjs','firmware-update.mjs','flash-adapter.mjs','firmware/s3-0.9.2.mjs','firmware/LICENSES.txt','flasher/esptool.mjs','flasher/LICENSES.txt','initial-catalog.mjs','initial-install.mjs','firmware/bootloader-0.8.3.mjs','firmware/partitions-0.8.3.mjs'];
+const expected = ['.nojekyll', 'app.mjs', 'index.html', 'serial.mjs', 'record-export.mjs', 'setup.mjs', 'wizard.mjs', 'omron-setup.mjs', 'receiver-code.txt', 'receiver-source.mjs', 'google-setup.mjs', 'receiver-manifest.json', 'style.css','factory-reset.mjs','firmware-catalog.mjs','firmware-policy.mjs','firmware-update.mjs','flash-adapter.mjs',firmwareFile,'firmware/LICENSES.txt','flasher/esptool.mjs','flasher/LICENSES.txt','initial-catalog.mjs','initial-install.mjs','firmware/bootloader-0.8.3.mjs','firmware/partitions-0.8.3.mjs'];
 async function inventory(dir,prefix=''){
  const all=[];for(const name of await readdir(dir)){const entry=path.join(dir,name),stat=await lstat(entry);assert(!stat.isSymbolicLink(),'No published symlinks');if(stat.isDirectory())all.push(...await inventory(entry,prefix+name+'/'));else{assert(stat.isFile());all.push(prefix+name);}}return all;
 }
@@ -25,8 +28,8 @@ assert(html.includes("form-action 'none'"), 'Credentials must not be submitted t
 assert(!/\son\w+\s*=/i.test(html), 'Inline event handlers are not allowed');
 const scripts = [...html.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script>/gi)];
 assert.equal(scripts.length, 1, 'Use only the local application script');
-assert(/\bsrc="app\.mjs\?v=0\.9\.2"/.test(scripts[0][1]) && !scripts[0][2].trim(), 'Remote or inline script');
-assert(/href="style\.css\?v=0\.9\.2"/.test(html), 'Use the local stylesheet');
+assert(scripts[0][1].includes(`src="app.mjs?v=${webVersion}"`) && !scripts[0][2].trim(), 'Remote or inline script');
+assert(html.includes(`href="style.css?v=${webVersion}"`), 'Use the local stylesheet');
 assert(!/<(?:script|link|img)\b[^>]*(?:src|href)=["'](?:\/|https?:|\/\/)/i.test(html), 'Assets must work below the GitHub project path');
 const external = new Set(['https://sheets.google.com/create','https://script.google.com/home','https://developers.google.com/apps-script/guides/web']);
 for(const match of html.matchAll(/<a\b[^>]*href="(https?:[^\"]+)"[^>]*>/g)){
@@ -37,7 +40,7 @@ for(const match of html.matchAll(/<a\b[^>]*href="(https?:[^\"]+)"[^>]*>/g)){
 const javascript = expected.filter(f=>f.endsWith('.mjs')).map(f=>files[f]).join('\n');
 assert(!/\b(?:fetch|XMLHttpRequest|WebSocket|EventSource|sendBeacon)\s*\(/.test(javascript), 'USB settings must not use a network transport');
 assert(!/\b(?:localStorage|sessionStorage|indexedDB)\b/.test(javascript), 'Do not persist credentials in browser storage');
-const encoded=/^export default `([A-Za-z0-9+/=\n]+)`;$/m.exec(files['firmware/s3-0.9.2.mjs']);assert(encoded,'Unexpected firmware module');
+const encoded=/^export default `([A-Za-z0-9+/=\n]+)`;$/m.exec(files[firmwareFile]);assert(encoded,'Unexpected firmware module');
 const image=Buffer.from(encoded[1],'base64');assert.equal(image.length,release.bytes);assert.equal(image[0],0xe9);assert.equal(image.readUInt16LE(12),9);
 assert.equal(createHash('sha256').update(image).digest('hex'),release.sha256,'Generic application image changed');
 assert.equal(createHash('sha256').update(files['flasher/esptool.mjs']).digest('hex'),'c6ccfa23e5ded4e2ccf6704472f3304be224ad2b81a60d5bcee3a2c296fcffab','Reviewed flasher changed');
@@ -58,4 +61,4 @@ const forbidden = [
 ];
 for (const pattern of forbidden) assert(!pattern.test(sanitized), 'Private deployment data in public assets');
 assert.equal(JSON.parse(files['receiver-manifest.json']).runtimeVersion,'V8');
-console.log('Public assets: 25 reviewed local files, pinned generic app/flasher, no fetch/CDN/data transport or embedded credentials.');
+console.log(`Public assets: ${expected.length} reviewed local files, pinned generic app/flasher, no fetch/CDN/data transport or embedded credentials.`);

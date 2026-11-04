@@ -3,6 +3,7 @@ const BP_HEADERS_ = Object.freeze([
   '측정 일시', '수축기', '이완기', '맥박',
   '혈압계 식별자', '사용자 슬롯', '수신 일시', 'recordId'
 ]);
+const BP_MONTHLY_HEADERS_ = Object.freeze(['연월','혈압계','사용자','측정 횟수','평균 수축기','평균 이완기','평균 맥박']);
 const BP_MAX_BODY_ = 24576;
 const BP_MAX_BATCH_ = 16;
 const BP_MAX_ROWS_ = 50000;
@@ -511,7 +512,35 @@ function checkDeviceHealth(){
 // Editor-only setup for a spreadsheet-bound copy. doGet/doPost never dispatch
 // to these functions and never return setup HTML, credentials or settings.
 function onOpen() {
-  SpreadsheetApp.getUi().createMenu('BP to Sheets').addItem('처음 설정', 'setupReceiver').addToUi();
+  SpreadsheetApp.getUi().createMenu('BP to Sheets').addItem('처음 설정', 'setupReceiver').addItem('월별 평균 준비', 'setupMonthlySummary').addToUi();
+}
+function monthlyFormula_(name) {
+  const source="'"+name.replace(/'/g,"''")+"'!";
+  const query="select Col1,Col2,Col3,count(Col4),avg(Col4),avg(Col5),avg(Col6) where Col1 is not null group by Col1,Col2,Col3 order by Col1 desc,Col2,Col3 label Col1 '연월',Col2 '혈압계',Col3 '사용자',count(Col4) '측정 횟수',avg(Col4) '평균 수축기',avg(Col5) '평균 이완기',avg(Col6) '평균 맥박' format avg(Col4) '0.0',avg(Col5) '0.0',avg(Col6) '0.0'";
+  return '=IFNA(QUERY({ARRAYFORMULA(IF('+source+'A2:A="","",LEFT('+source+'A2:A,7))),'+source+'E2:E,ARRAYFORMULA(IF('+source+'F2:F="","미확인",TO_TEXT('+source+'F2:F))),'+'ARRAYFORMULA(N('+source+'B2:D))},"'+query+'",0),{'+BP_MONTHLY_HEADERS_.map(function(label){return '"'+label+'"';}).join(',')+'})';
+}
+function preflightMonthly_(sheet,formula) {
+  if(!sheet||sheet.getLastRow()===0&&sheet.getLastColumn()===0)return;
+  if(sheet.getLastColumn()>7||sheet.getRange(1,1).getFormula()!==formula)fail_('sheet_corrupt');
+}
+function monthlySheet_(book,name) {
+  const formula=monthlyFormula_(name);let sheet=book.getSheetByName('월별 평균');
+  preflightMonthly_(sheet,formula);
+  if(sheet&&(sheet.getLastRow()||sheet.getLastColumn()))return sheet;
+  if(!sheet)sheet=book.insertSheet('월별 평균');
+  sheet.getRange(1,1).setFormula(formula);sheet.setFrozenRows(1);
+  sheet.setColumnWidth(1,110);sheet.setColumnWidth(2,270);sheet.setColumnWidth(3,80);sheet.setColumnWidths(4,4,110);
+  return sheet;
+}
+/** Editor-only; adds a read-only derived view without touching raw rows or auth. */
+function setupMonthlySummary() {
+  const config=readConfig_(),lock=LockService.getScriptLock();if(!lock.tryLock(BP_LOCK_WAIT_MS_))fail_('busy');
+  try {
+    const book=SpreadsheetApp.openById(config.spreadsheetId),source=book.getSheetByName(config.sheetName);
+    if(!source)fail_('sheet_missing');readRows_(source);
+    const sheet=monthlySheet_(book,config.sheetName);SpreadsheetApp.flush();
+    return 'https://docs.google.com/spreadsheets/d/'+book.getId()+'/edit#gid='+sheet.getSheetId();
+  } finally {lock.releaseLock();}
 }
 function setupReceiver() {
   if(!SpreadsheetApp.getActiveSpreadsheet()) throw new Error('시트의 확장 프로그램 → Apps Script에서 이 코드를 설치하세요.');
@@ -559,18 +588,20 @@ function configureReceiver(input) {
     const data=book.getSheetByName(name);if(data&&(data.getLastRow()||data.getLastColumn()))readRows_(data);
     [['기기상태',BP_STATUS_HEADERS_],['장애이력',BP_EVENT_HEADERS_]].forEach(function(item){const sheet=book.getSheetByName(item[0]);if(sheet&&(sheet.getLastRow()||sheet.getLastColumn()))monitorTable_(book,item[0],item[1],false);});
     [1,2].forEach(function(user){preflightUserView_(book.getSheetByName('사용자 '+user+' 혈압기록'),userViewFormula_(name,user));});
+    preflightMonthly_(book.getSheetByName('월별 평균'),monthlyFormula_(name));
     let original=data;
     if(!original){const tabs=book.getSheets();if(tabs.length===1&&tabs[0].getLastRow()===0&&tabs[0].getLastColumn()===0){original=tabs[0];original.setName(name);}else original=book.insertSheet(name);}
     if(original.getLastRow()===0){original.getRange(1,1,1,8).setValues([BP_HEADERS_.slice()]);original.setFrozenRows(1);}
     readRows_(original);
     [1,2].forEach(function(user){const title='사용자 '+user+' 혈압기록';let sheet=book.getSheetByName(title);if(!sheet)sheet=book.insertSheet(title);if(sheet.getLastRow()===0){sheet.getRange(1,1,1,8).setValues([BP_HEADERS_.slice()]);sheet.setFrozenRows(1);}if(!sheet.getRange(2,1).getFormula())sheet.getRange(2,1).setFormula(userViewFormula_(name,user));});
     monitorTable_(book,'기기상태',BP_STATUS_HEADERS_,true);monitorTable_(book,'장애이력',BP_EVENT_HEADERS_,true);
+    monthlySheet_(book,name);
     SpreadsheetApp.flush();
     // Write merged authentication settings only after preserving/validating tabs.
     props.setProperties({SPREADSHEET_ID:book.getId(),SHEET_NAME:name,DEVICES_JSON:JSON.stringify(devices)},false);
     const checked=readConfig_();if(checked.spreadsheetId!==book.getId()||checked.devices[registration.bridgeId].token!==registration.token)fail_('verification_failed');
     ensureMonitoringTrigger_();
-    ['사용자 1 혈압기록','사용자 2 혈압기록',name,'기기상태','장애이력'].forEach(function(title,index){book.setActiveSheet(book.getSheetByName(title));book.moveActiveSheet(index+1);});
+    ['사용자 1 혈압기록','사용자 2 혈압기록',name,'기기상태','장애이력','월별 평균'].forEach(function(title,index){book.setActiveSheet(book.getSheetByName(title));book.moveActiveSheet(index+1);});
     book.setActiveSheet(book.getSheetByName('사용자 1 혈압기록'));
     return {ok:true,result:receiverSetupResult_(book,registration)};
   } catch(error) {
@@ -590,7 +621,7 @@ body{font:17px/1.7 system-ui,sans-serif;color:#183c3b;margin:24px;background:#f6
 <script>
 var save=document.getElementById('save'),status=document.getElementById('status');
 var errors={replacement_required:'같은 보드의 다른 등록이 있습니다. 교체 영향을 확인한 경우에만 위 확인란을 선택하세요.',different_spreadsheet:'이미 다른 시트를 사용하는 수신기입니다. 기존 설정을 바꾸지 않았습니다. 새 시트의 확장 프로그램에서 시작하세요.',custom_sheet_name:'기존 사용자 지정 기록 탭이 있습니다. 고급 설정 안내를 이용하세요.',sheet_corrupt:'기존 탭의 열 또는 수식이 예상과 다릅니다. 내용을 지우지 말고 고급 설정 안내를 이용하세요.',busy:'다른 저장 작업 중입니다. 잠시 후 다시 눌러주세요.',invalid_request:'웹에서 등록 값을 다시 복사해 전체를 붙여넣으세요.',configuration_error:'기존 등록 정보를 확인할 수 없습니다. 기존 값을 지우지 말고 고급 안내를 이용하세요.'};
-save.onclick=function(){save.disabled=true;document.getElementById('result').hidden=true;status.textContent='기존 정보를 확인하고 준비합니다…';google.script.run.withSuccessHandler(function(r){save.disabled=false;if(!r||!r.ok){status.textContent=errors[r&&r.error]||'준비를 끝내지 못했습니다. 기존 기록을 지우지 말고 다시 확인하세요.';return;}document.getElementById('registration').value='';document.getElementById('replace').checked=false;document.getElementById('receipt').value=JSON.stringify(r.result);document.getElementById('result').hidden=false;status.textContent='등록·5개 탭·상태 검사 준비 완료';}).withFailureHandler(function(){save.disabled=false;status.textContent='Google 실행을 확인하지 못했습니다. 기록과 설정을 지우지 말고 다시 확인하세요.';}).configureReceiver({registration:document.getElementById('registration').value,replaceExisting:document.getElementById('replace').checked});};
+save.onclick=function(){save.disabled=true;document.getElementById('result').hidden=true;status.textContent='기존 정보를 확인하고 준비합니다…';google.script.run.withSuccessHandler(function(r){save.disabled=false;if(!r||!r.ok){status.textContent=errors[r&&r.error]||'준비를 끝내지 못했습니다. 기존 기록을 지우지 말고 다시 확인하세요.';return;}document.getElementById('registration').value='';document.getElementById('replace').checked=false;document.getElementById('receipt').value=JSON.stringify(r.result);document.getElementById('result').hidden=false;status.textContent='등록·6개 탭·상태 검사 준비 완료';}).withFailureHandler(function(){save.disabled=false;status.textContent='Google 실행을 확인하지 못했습니다. 기록과 설정을 지우지 말고 다시 확인하세요.';}).configureReceiver({registration:document.getElementById('registration').value,replaceExisting:document.getElementById('replace').checked});};
 document.getElementById('copy').onclick=function(){var field=document.getElementById('receipt');field.focus();field.select();};
 </script></body></html>`;
 }

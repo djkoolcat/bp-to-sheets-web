@@ -16,6 +16,7 @@ function table(change=()=>{}){
 test('Release checks bind chip, exact image hash, version ordering and physical MAC identity',async()=>{
  assert(compatible(board,release));assert(!compatible({...board,chip:'esp32c3'},release));assert(!compatible({...board,boardId:'generic'},release));
  assert.equal(compareVersion('hem-0.10.0','hem-0.8.3'),1);assert.equal(compareVersion('hem-0.8.3','hem-0.8.3'),0);
+ assert.equal(compareVersion('hem-1.0.0','hem-0.9.2'),1);assert.equal(compareVersion('hem-0.9.2','hem-1.0.0'),-1);
  assert.equal(bridgeFromMac('01:02:03:04:05:06'),board.bridgeId);
  const encoded=await loadReleaseImage(),bytes=Uint8Array.from(atob(encoded),c=>c.charCodeAt(0));await verifyImage(bytes,release);
  const damaged=bytes.slice();damaged[1000]^=1;await assert.rejects(verifyImage(damaged,release),/firmware_hash/);
@@ -46,7 +47,7 @@ test('Update holds the application, verifies loader identity/partitions, writes 
 test('Bad firmware/foreign loader cannot write; same and newer versions require deliberate reinstall/refusal',async()=>{
  const bad=harness({loadImage:async()=>btoa('wrong file')});await assert.rejects(bad.update.start(board));assert(!bad.calls.includes('hold'));assert(!bad.calls.includes('write'));
  const foreign=harness({identity:'esp32-000000000002'});await assert.rejects(foreign.update.start(board),/board_changed/);assert(!foreign.calls.includes('write'));
- await assert.rejects(harness().update.start(later),/firmware_not_newer/);await assert.rejects(harness().update.start({...later,firmwareVersion:'hem-1.0.0'},{reinstall:true}),/firmware_not_newer/);
+ await assert.rejects(harness().update.start(later),/firmware_not_newer/);await assert.rejects(harness().update.start({...later,firmwareVersion:'hem-1.1.0'},{reinstall:true}),/firmware_not_newer/);
 });
 test('An interrupted write never retries itself; manual retry writes the same checked image',async()=>{
  const h=harness({writeError:true});await assert.rejects(h.update.start(board),/interrupted/);assert.equal(h.calls.filter(x=>x==='write').length,1);assert(h.update.recoverable);

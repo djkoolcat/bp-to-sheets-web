@@ -1,7 +1,11 @@
-import {hex,bridgeFromMac,verifyPartitions} from './firmware-policy.mjs?v=0.9.2';
-import {initialImages} from './initial-catalog.mjs?v=0.9.2';
+import {hex,bridgeFromMac,verifyPartitions} from './firmware-policy.mjs?v=1.0.0';
+import {initialImages} from './initial-catalog.mjs?v=1.0.0';
 export function validateInitialFiles(files){
  if(files.length!==3||files.some((f,i)=>f.address!==initialImages[i].address||!(f.data instanceof Uint8Array)||f.data.length!==initialImages[i].bytes))throw Error('firmware_image');
+}
+export const userDataRegions=Object.freeze([{address:0x9000,bytes:0x6000},{address:0x610000,bytes:0x10000}].map(Object.freeze));
+export function validateUserDataFiles(files){
+ if(files.length!==userDataRegions.length||files.some((f,i)=>f.address!==userDataRegions[i].address||!(f.data instanceof Uint8Array)||f.data.length!==userDataRegions[i].bytes||f.data.some(v=>v!==255)))throw Error('reset_regions');
 }
 // Native USB has a small receive buffer. Keep each stub read packet bounded
 // and acknowledge it before requesting the next; never read NVS or logs.
@@ -52,6 +56,21 @@ export async function createFlasher(port,implementation=null){
     const hash=String(await loader.flashMd5sum(address,size)).toLowerCase();
     if(!/^[a-f0-9]{32}$/.test(hash))throw Error('preservation_failed');hashes.push(hash);
    }return hashes;
+  },
+  async firmwareHashes(){
+   const hashes=[];
+   // Bootloader, partition table, PHY and the entire factory app slot stay intact.
+   for(const [address,size] of [[0,0x8000],[0x8000,0x1000],[0xf000,0x1000],[0x10000,0x600000]]){
+    const hash=String(await loader.flashMd5sum(address,size)).toLowerCase();
+    if(!/^[a-f0-9]{32}$/.test(hash))throw Error('preservation_failed');hashes.push(hash);
+   }return hashes;
+  },
+  async clearUserData(progress){
+   const files=userDataRegions.map(r=>({address:r.address,data:new Uint8Array(r.bytes).fill(255)}));
+   validateUserDataFiles(files);
+   const total=files.reduce((n,f)=>n+f.data.length,0);
+   try{await loader.writeFlash({fileArray:files,flashMode:'keep',flashFreq:'keep',flashSize:'keep',eraseAll:false,compress:true,calculateMD5Hash:data=>hex(md5(data)),reportProgress:(i,written)=>progress(Math.min(100,Math.floor((files.slice(0,i).reduce((n,f)=>n+f.data.length,0)+written)*100/total)))});}
+   finally{for(const file of files)file.data.fill(0);}
   },
   async write(image,progress){
    await loader.writeFlash({fileArray:[{address:0x10000,data:image}],flashMode:'keep',flashFreq:'keep',flashSize:'keep',eraseAll:false,compress:true,calculateMD5Hash:data=>hex(md5(data)),reportProgress:(_i,written,total)=>progress(Math.floor(written*100/total))});
