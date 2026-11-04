@@ -1,7 +1,7 @@
-import {release,loadReleaseImage} from './firmware-catalog.mjs?v=0.7.2';
-import {compatible,compareVersion,verifyImage,verifySettings,verifyRecords} from './firmware-policy.mjs?v=0.7.2';
-import {collectRecords} from './record-export.mjs?v=0.7.2';
-import {createFlasher} from './flash-adapter.mjs?v=0.7.2';
+import {release,loadReleaseImage} from './firmware-catalog.mjs?v=0.8.0';
+import {compatible,compareVersion,verifyImage,verifySettings,verifyRecords} from './firmware-policy.mjs?v=0.8.0';
+import {collectRecords} from './record-export.mjs?v=0.8.0';
+import {createFlasher} from './flash-adapter.mjs?v=0.8.0';
 const fail=code=>{throw Error(code);};
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 export class FirmwareUpdate{

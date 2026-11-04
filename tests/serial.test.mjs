@@ -62,3 +62,9 @@ test('Microlife capability is S3-only; bounded discovery and volume fields rejec
  assert.equal(reply(d,'id','info'),d);
  for(const changes of [{chip:'esp32c3'},{meterModel:'omron-hem7155t'},{pairingRequired:true},{audioVolume:100},{targetAddress:'bad'},{meterCandidates:Array(9).fill({})}])assert.throws(()=>reply({...d,...changes},'id','info'));
 });
+
+test('Omron enrollment ACK loss is never replayed during state read or reconnect',async()=>{
+ const p=new Port({drop:'omron-setup'}),client=new SerialClient();
+ try{const d=await client.open(p);await assert.rejects(client.request('omron-setup',d,{action:'register',address:'00:11:22:33:44:55',scan:1,confirm:'CONFIRM-PAIRING-KEY-CHANGE'},100),/usb_timeout/);await client.request('info');assert.equal(p.received.filter(v=>v.operation==='omron-setup').length,1);}
+ finally{await client.close();}
+});

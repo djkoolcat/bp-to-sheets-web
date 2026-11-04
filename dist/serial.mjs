@@ -1,4 +1,5 @@
-import {sheetUrl,userSheetUrls} from './setup.mjs?v=0.7.2';
+import {validateSetup} from './omron-setup.mjs?v=0.8.0';
+import {sheetUrl,userSheetUrls} from './setup.mjs?v=0.8.0';
 const encoder=new TextEncoder();
 const wait=ms=>new Promise(r=>setTimeout(r,ms));
 const fail=code=>{throw Error(code);};
@@ -7,7 +8,7 @@ export function reply(d,id,operation){
  if(!d||d.schemaVersion!==1||!['bp-to-sheets-hem7155t','bp-to-sheets-microlife-b4bt'].includes(d.product)||d.requestId!==id||d.operation!==operation||
   !/^esp32-[a-f0-9]{12}$/.test(d.bridgeId)||!/^[a-z0-9][a-z0-9_-]{0,31}$/.test(d.meterId)||
   !/^[a-f0-9]{32}$/.test(d.session)||typeof d.firmwareVersion!=='string'||d.firmwareVersion.length>32||!/^hem-\d+\.\d+\.\d+$/.test(d.firmwareVersion))fail('invalid_usb_reply');
- meterInfo(d);
+ meterInfo(d);validateSetup(d);
  const p=profiles[d.chip];if(!p)fail('unsupported_board');
  if((d.chip==='esp32s3'||d.boardId!==undefined)&&d.boardId!==p.id)fail('unsupported_board');
  if((d.chip==='esp32s3'||d.appPartitionSize!==undefined)&&d.appPartitionSize!==p.app)fail('unsupported_board');
@@ -81,7 +82,7 @@ export class SerialClient{
   const generation=this.generation;
   const run=async()=>{
    if(!this.writer||this.closing||generation!==this.generation)fail('usb_disconnected');
-   if(!['info','configure','test','logs','sheet-link','records','meter-model','meter-target','audio','hold'].includes(op))fail('invalid_operation');
+   if(!['info','configure','test','logs','sheet-link','records','meter-model','meter-target','audio','hold','omron-setup'].includes(op))fail('invalid_operation');
    const id=Array.from(crypto.getRandomValues(new Uint8Array(16)),v=>v.toString(16).padStart(2,'0')).join('');
    const payload={schemaVersion:1,requestId:id,operation:op,...fields};if(board){payload.bridgeId=board.bridgeId;payload.session=board.session;}
    const bytes=encoder.encode('BPUSB '+JSON.stringify(payload)+'\n');if(bytes.length>1500)fail('invalid_configuration');

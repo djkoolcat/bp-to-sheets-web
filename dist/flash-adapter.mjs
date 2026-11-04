@@ -1,4 +1,8 @@
-import {hex,bridgeFromMac,verifyPartitions} from './firmware-policy.mjs?v=0.7.2';
+import {hex,bridgeFromMac,verifyPartitions} from './firmware-policy.mjs?v=0.8.0';
+import {initialImages} from './initial-catalog.mjs?v=0.8.0';
+export function validateInitialFiles(files){
+ if(files.length!==3||files.some((f,i)=>f.address!==initialImages[i].address||!(f.data instanceof Uint8Array)||f.data.length!==initialImages[i].bytes))throw Error('firmware_image');
+}
 // Native USB has a small receive buffer. Keep each stub read packet bounded
 // and acknowledge it before requesting the next; never read NVS or logs.
 export async function readPartitionTable(loader,transport,md5,{validate=true}={}){
@@ -55,7 +59,7 @@ export async function createFlasher(port,implementation=null){
   async matchesInitial(files){for(const f of files)if(String(await loader.flashMd5sum(f.address,f.data.length)).toLowerCase()!==hex(md5(f.data)))return false;return true;},
   async writeInitial(files,progress){
    // Exact three sector-aligned ranges only. Never erase all or accept addresses from UI.
-   if(files.length!==3||files.some((f,i)=>f.address!==[0,0x8000,0x10000][i]||!(f.data instanceof Uint8Array))||files[0].data.length!==15104||files[1].data.length!==0xc00||files[2].data.length!==1871776)throw Error('firmware_image');
+   validateInitialFiles(files);
    const total=files.reduce((n,f)=>n+f.data.length,0);let done=0,last=-1;
    await loader.writeFlash({fileArray:files,flashMode:'keep',flashFreq:'keep',flashSize:'keep',eraseAll:false,compress:true,calculateMD5Hash:data=>hex(md5(data)),reportProgress:(i,written)=>{if(i!==last){done=files.slice(0,i).reduce((n,f)=>n+f.data.length,0);last=i;}progress(Math.min(100,Math.floor((done+written)*100/total)));}});
   },

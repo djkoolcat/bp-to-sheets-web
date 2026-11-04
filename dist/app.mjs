@@ -1,32 +1,33 @@
-import {SerialClient,Connection,settings,preserved,event,eventText} from './serial.mjs?v=0.7.2';
-import {collectRecords,csvBytes,xlsxBytes,fileName} from './record-export.mjs?v=0.7.2';
-import {createWizard} from './wizard.mjs?v=0.7.2';
-import {userSheetUrls,linksPreserved} from './setup.mjs?v=0.7.2';
-import {release} from './firmware-catalog.mjs?v=0.7.2';
-import {compatible,compareVersion} from './firmware-policy.mjs?v=0.7.2';
-import {FirmwareUpdate} from './firmware-update.mjs?v=0.7.2';
-import {InitialInstall} from './initial-install.mjs?v=0.7.2';
+import {createOmronSetup,setupAction,errors as omronErrors} from './omron-setup.mjs?v=0.8.0';
+import {SerialClient,Connection,settings,preserved,event,eventText} from './serial.mjs?v=0.8.0';
+import {collectRecords,csvBytes,xlsxBytes,fileName} from './record-export.mjs?v=0.8.0';
+import {createWizard} from './wizard.mjs?v=0.8.0';
+import {userSheetUrls,linksPreserved} from './setup.mjs?v=0.8.0';
+import {release} from './firmware-catalog.mjs?v=0.8.0';
+import {compatible,compareVersion} from './firmware-policy.mjs?v=0.8.0';
+import {FirmwareUpdate} from './firmware-update.mjs?v=0.8.0';
+import {InitialInstall} from './initial-install.mjs?v=0.8.0';
 const $=id=>document.getElementById(id);
-let board=null,connected=false,busy=false,dirty=false,polling=false,connection,wizard,updater,installer;
+let board=null,connected=false,busy=false,dirty=false,polling=false,connection,wizard,updater,installer,omron;
 const seen=new Set();
 const messages={invalid_ssid:'Wi-Fi 이름은 1~32바이트로 입력하세요.',invalid_password:'Wi-Fi 비밀번호는 8~63바이트로 입력하세요.',invalid_token:'Google에 등록한 64자리 소문자 토큰을 입력하세요.',invalid_endpoint:'Google Apps Script의 HTTPS /exec 주소를 입력하세요.',usb_timeout:'보드 응답을 확인하지 못했습니다. 설정 저장 결과는 재연결 후 확인하세요.',usb_disconnected:'USB 연결이 끊겼습니다. 보드를 다시 선택해 주세요.',unsupported_board:'이 설정 화면에서 지원하는 보드가 아닙니다.',invalid_usb_reply:'보드 응답을 확인할 수 없습니다. 다른 USB 장치를 선택했는지 확인하세요.',session_changed:'보드가 재시작했습니다. 다시 연결해 주세요.',busy:'보드 작업이 끝난 뒤 다시 시도하세요.',device_busy_timeout:'혈압계 통신이 끝난 뒤 보드를 다시 연결해 주세요.',preservation_failed:'저장 후 기존 기록·설정 확인이 필요합니다. 초기화하지 마세요.',invalid_configuration:'입력값을 확인하세요.',queue_not_ready:'보드 기록 저장소 확인이 필요합니다. 초기화하지 마세요.'};
 Object.assign(messages,{export_update_required:'기록 내보내기는 S3 hem-0.7.0 이상에서 지원합니다. 펌웨어를 먼저 업데이트하세요.',invalid_export_reply:'기록 응답을 끝까지 확인하지 못해 파일을 만들지 않았습니다.',snapshot_changed:'읽는 동안 기록이나 전송 상태가 바뀌었습니다. 잠시 후 다시 저장해 주세요.',export_session_changed:'보드가 재시작하거나 바뀌었습니다. 다시 연결해 주세요.'});
 Object.assign(messages,{invalid_sheet_tabs:'같은 시트의 서로 다른 사용자 탭 주소 두 개를 입력하세요. 각 주소에 gid가 필요합니다.',invalid_sheet_url:'Google 시트 주소를 확인하세요.',wrong_sheet:'1단계에서 선택한 시트와 다른 파일입니다. 사용자 탭의 주소를 다시 확인하세요.',sheet_link_commit_failed:'보드에서 링크 저장을 확인하지 못했습니다. 다시 읽어 확인한 뒤 필요하면 직접 저장하세요.'});
 Object.assign(messages,{firmware_manifest:'배포 정보가 올바르지 않습니다. 업데이트하지 않았습니다.',firmware_image:'보드에 맞는 펌웨어 파일인지 확인할 수 없습니다.',firmware_hash:'펌웨어 파일 검증에 실패했습니다. 페이지를 새로 열어 다시 확인하세요.',partition_layout:'확인된 S3 LCD 메모리 구성과 다릅니다. 기록하지 않았습니다.',partition_checksum:'보드 메모리 구성을 정확히 읽지 못했습니다. 기록하지 않았습니다.',secure_board_unsupported:'보드의 보안 설정이 이 업데이트 방식과 다릅니다. 기록하지 않았습니다.',board_changed:'연결된 보드가 바뀌었습니다. 원래 보드를 다시 선택하세요.',firmware_not_newer:'같거나 더 최신인 버전입니다. 이전 버전으로 내리지 않습니다.',firmware_reconnect:'기록은 끝났지만 재연결 확인이 남았습니다. 아래에서 USB를 다시 선택하세요.'});
 function notice(text,error=false){$('notice').textContent=text;$('notice').classList.toggle('error',error);}
-function error(e){notice(e.name==='NotFoundError'?'USB 장치 선택을 취소했습니다.':e.name==='SecurityError'||e.name==='NotAllowedError'?'USB 권한을 허용하고 데스크톱 Chrome·Edge의 새 탭에서 다시 열어주세요.':messages[e.message]||'요청을 완료하지 못했습니다. USB 연결과 입력값을 확인해 주세요.',true);}
+function error(e){notice(e.name==='NotFoundError'?'USB 장치 선택을 취소했습니다.':e.name==='SecurityError'||e.name==='NotAllowedError'?'USB 권한을 허용하고 데스크톱 Chrome·Edge의 새 탭에서 다시 열어주세요.':omronErrors[e.message]||messages[e.message]||'요청을 완료하지 못했습니다. USB 연결과 입력값을 확인해 주세요.',true);}
 function controls(){
- const locked=busy||!!installer?.active;
+ const locked=busy||!!installer?.active||!!omron?.active();
  for(const id of ['export-user','export-csv','export-xlsx'])$(id).disabled=locked||!connected||!board?.queueReady||board?.recordsExportVersion!==1;
  $('export-help').textContent=!connected?'USB 보드를 연결하면 기록을 파일로 저장할 수 있습니다.':board.recordsExportVersion!==1?'기록 내보내기는 S3 hem-0.7.0 이상에서 지원합니다. 아래에서 펌웨어를 업데이트하세요.':'보드에 남아 있는 최근 최대 128건입니다. 내려받아도 보드 기록과 전송 대기 상태는 그대로입니다.';
  $('connect').disabled=locked||connected||!supported;$('disconnect').disabled=locked||!connection?.enabled;
  $('fields').disabled=locked||!connected||!board?.queueReady;
  $('test').disabled=locked||!connected||!board?.configured||dirty;
  $('history').disabled=locked||!connected||!Number.isInteger(board?.logNewestSeq);
- meterControls();firmwareControls();initialControls();wizard?.render();
+ meterControls();firmwareControls();initialControls();wizard?.render();omron?.render();
 }
 function firmwareControls(){
- const locked=busy||!!installer?.active;
+ const locked=busy||!!installer?.active||!!omron?.active();
  $('firmware-current').textContent=connected?board.firmwareVersion:'USB 연결 후 표시';$('firmware-latest').textContent=release.version;
  const supported=connected&&compatible(board,release),comparison=supported?compareVersion(board.firmwareVersion,release.version):null;
  $('firmware-reinstall-row').hidden=comparison!==0;
@@ -58,7 +59,14 @@ updater=new FirmwareUpdate({connection,client,getPorts:()=>navigator.serial.getP
 installer=new InitialInstall({connection,getPorts:()=>navigator.serial.getPorts(),progress:(stage,percent)=>{$('initial-progress').hidden=false;$('initial-progress').value=percent;$('initial-status').textContent=stage+(stage==='처음 설치 중'?` · ${percent}%`:'');initialControls();}});
 const supported=isSecureContext&&'serial'in navigator;$('unsupported').hidden=supported;
 async function work(run){if(busy||installer?.active)return;busy=true;controls();try{while(polling)await new Promise(r=>setTimeout(r,20));await run();}catch(e){error(e);}finally{busy=false;controls();}}
-wizard=createWizard({getState:()=>({board,connected,busy:busy||!!installer?.active,dirty}),tokenChanged:()=>{dirty=true;controls();},test:()=>runTest(),refresh:()=>work(async()=>{state(await connection.read('info'));notice('보드의 현재 등록 상태와 저장 정보를 다시 읽었습니다.');}),notice});
+wizard=createWizard({getState:()=>({board,connected,busy:busy||!!installer?.active||!!omron?.active(),dirty}),tokenChanged:()=>{dirty=true;controls();},test:()=>runTest(),refresh:()=>work(async()=>{state(await connection.read('info'));notice('보드의 현재 등록 상태와 저장 정보를 다시 읽었습니다.');}),notice});
+omron=createOmronSetup({getState:()=>({board,connected,busy:busy||!!installer?.active,dirty}),run:(action,address,confirmed)=>work(async()=>{
+ const before=await connection.read('info');if(before.bridgeId!==board.bridgeId||before.meterId!==board.meterId)throw Error('board_changed');
+ const fields=setupAction(before,action,address,confirmed);
+ // A missing ACK is never retried. Polling subsequently reads the outcome.
+ state(await client.request('omron-setup',before,fields));
+ notice(action==='restart'?'보드를 재시작합니다. 같은 보드의 USB 재연결을 기다립니다.':'요청을 보냈습니다. 아래 등록 진행 상태를 확인하세요. 요청은 자동 반복하지 않습니다.');
+})});
 controls();
 $('firmware-reinstall').onchange=firmwareControls;
 async function updateFirmware(retry=false){return work(async()=>{
@@ -135,7 +143,7 @@ window.addEventListener('pagehide',()=>{$('password').value='';$('token').value=
 
 var audioDirty=false,modelDraft=false;
 function meterControls(){
- const locked=busy||!!installer?.active;
+ const locked=busy||!!installer?.active||!!omron?.active();
  const b=board,enabled=connected&&b?.meterModelSwitchSupported===true&&!locked&&!dirty;
  for(const id of ['meter-model','meter-confirm'])$(id).disabled=!enabled;
  if(!modelDraft&&document.activeElement!==$('meter-model')&&!$('meter-confirm').checked)$('meter-model').value=b?.meterModel||'omron-hem7155t';

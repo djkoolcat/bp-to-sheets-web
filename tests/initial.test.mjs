@@ -69,3 +69,10 @@ test('A blocked fresh-board check reports identity and blank flags only, never h
  const h=harness({hashes:['nonempty',blankProtectedHashes[1]]});await assert.rejects(h.install.inspect(h.port,confirmed),/initial_has_data/);
  assert.deepEqual(h.install.inspection,{...chip,settingsEmpty:false,logEmpty:true});assert(!JSON.stringify(h.install.inspection).includes('nonempty'));assert(!h.calls.includes('write'));
 });
+
+test('Native initial flasher accepts the current release sizes and rejects address or length drift',async()=>{
+ const {initialImages}=await import('../dist/initial-catalog.mjs');const {validateInitialFiles}=await import('../dist/flash-adapter.mjs');
+ const files=initialImages.map(f=>({address:f.address,data:new Uint8Array(f.bytes)}));assert.doesNotThrow(()=>validateInitialFiles(files));
+ assert.throws(()=>validateInitialFiles(files.map((f,i)=>i===2?{...f,address:0x9000}:f)),/firmware_image/);
+ assert.throws(()=>validateInitialFiles(files.map((f,i)=>i===2?{...f,data:f.data.subarray(0,f.data.length-1)}:f)),/firmware_image/);
+});

@@ -5,7 +5,7 @@ if(process.argv.length!==3)throw Error('Pass the generic S3 application build, n
 const bytes=await readFile(process.argv[2]);
 if(bytes.length!==release.bytes||bytes[0]!==0xe9||bytes.readUInt16LE(12)!==release.imageChip||createHash('sha256').update(bytes).digest('hex')!==release.sha256)throw Error('Firmware does not match the verified release.');
 const dir=new URL('../dist/firmware/',import.meta.url);await mkdir(dir,{recursive:true});
-await writeFile(new URL('s3-0.8.3.mjs',dir),'// Generic app image only. No board NVS, credentials or measurement queue.\nexport default `'+bytes.toString('base64').match(/.{1,32}/g).join('\n')+'`;\n');
+await writeFile(new URL('s3-0.9.0.mjs',dir),'// Generic app image only. No board NVS, credentials or measurement queue.\nexport default `'+bytes.toString('base64').match(/.{1,32}/g).join('\n')+'`;\n');
 const source=new URL('../../',import.meta.url),licenses=[];
 for(const file of ['firmware/s3-lcd154/fonts/OFL.txt','firmware/s3-lcd154/LICENSE-qr-MIT.txt','probes/hem-7155t/LICENSE.third-party-MIT'])licenses.push(file+'\n'+await readFile(new URL(file,source),'utf8'));
 await writeFile(new URL('LICENSES.txt',dir),licenses.join('\n\n'));
