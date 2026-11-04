@@ -1,5 +1,5 @@
-import {hex,bridgeFromMac,verifyPartitions} from './firmware-policy.mjs?v=0.9.1';
-import {initialImages} from './initial-catalog.mjs?v=0.9.1';
+import {hex,bridgeFromMac,verifyPartitions} from './firmware-policy.mjs?v=0.9.2';
+import {initialImages} from './initial-catalog.mjs?v=0.9.2';
 export function validateInitialFiles(files){
  if(files.length!==3||files.some((f,i)=>f.address!==initialImages[i].address||!(f.data instanceof Uint8Array)||f.data.length!==initialImages[i].bytes))throw Error('firmware_image');
 }

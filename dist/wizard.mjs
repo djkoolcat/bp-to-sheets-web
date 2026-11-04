@@ -1,6 +1,6 @@
-import {receiverSource} from './receiver-source.mjs?v=0.9.1';
-import {googleRegistration,googleReceipt} from './google-setup.mjs?v=0.9.1';
-import {SetupProgress,sheetUrl,sheetId,userSheetUrls,sheetBrowserUrl,newToken,deviceProperties,sheetFormula,pairingStatus} from './setup.mjs?v=0.9.1';
+import {receiverSource} from './receiver-source.mjs?v=0.9.2';
+import {googleRegistration,googleReceipt} from './google-setup.mjs?v=0.9.2';
+import {SetupProgress,sheetUrl,sheetId,userSheetUrls,sheetBrowserUrl,newToken,deviceProperties,sheetFormula,pairingStatus} from './setup.mjs?v=0.9.2';
 const $=id=>document.getElementById(id);
 const titles=['내 시트 준비','USB 보드 확인','기기 토큰 발급·등록','Wi-Fi·Google 연결','혈압계 등록·수신 확인','사용자별 시트 링크·LCD QR'];
 const short=['시트 준비','보드 확인','토큰 등록','Wi-Fi 연결','혈압계 연결','시트 링크·QR'];
