@@ -7,7 +7,7 @@ import {fileURLToPath} from 'node:url';
 import path from 'node:path';
 
 const directory = fileURLToPath(new URL('../dist/', import.meta.url));
-const expected = ['.nojekyll', 'app.mjs', 'index.html', 'serial.mjs', 'record-export.mjs', 'setup.mjs', 'wizard.mjs', 'omron-setup.mjs', 'receiver-code.txt', 'receiver-manifest.json', 'style.css','firmware-catalog.mjs','firmware-policy.mjs','firmware-update.mjs','flash-adapter.mjs','firmware/s3-0.9.0.mjs','firmware/LICENSES.txt','flasher/esptool.mjs','flasher/LICENSES.txt','initial-catalog.mjs','initial-install.mjs','firmware/bootloader-0.8.3.mjs','firmware/partitions-0.8.3.mjs'];
+const expected = ['.nojekyll', 'app.mjs', 'index.html', 'serial.mjs', 'record-export.mjs', 'setup.mjs', 'wizard.mjs', 'omron-setup.mjs', 'receiver-code.txt', 'receiver-source.mjs', 'google-setup.mjs', 'receiver-manifest.json', 'style.css','firmware-catalog.mjs','firmware-policy.mjs','firmware-update.mjs','flash-adapter.mjs','firmware/s3-0.9.0.mjs','firmware/LICENSES.txt','flasher/esptool.mjs','flasher/LICENSES.txt','initial-catalog.mjs','initial-install.mjs','firmware/bootloader-0.8.3.mjs','firmware/partitions-0.8.3.mjs'];
 async function inventory(dir,prefix=''){
  const all=[];for(const name of await readdir(dir)){const entry=path.join(dir,name),stat=await lstat(entry);assert(!stat.isSymbolicLink(),'No published symlinks');if(stat.isDirectory())all.push(...await inventory(entry,prefix+name+'/'));else{assert(stat.isFile());all.push(prefix+name);}}return all;
 }
@@ -25,8 +25,8 @@ assert(html.includes("form-action 'none'"), 'Credentials must not be submitted t
 assert(!/\son\w+\s*=/i.test(html), 'Inline event handlers are not allowed');
 const scripts = [...html.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script>/gi)];
 assert.equal(scripts.length, 1, 'Use only the local application script');
-assert(/\bsrc="app\.mjs\?v=0\.8\.0"/.test(scripts[0][1]) && !scripts[0][2].trim(), 'Remote or inline script');
-assert(/href="style\.css\?v=0\.8\.0"/.test(html), 'Use the local stylesheet');
+assert(/\bsrc="app\.mjs\?v=0\.9\.0"/.test(scripts[0][1]) && !scripts[0][2].trim(), 'Remote or inline script');
+assert(/href="style\.css\?v=0\.9\.0"/.test(html), 'Use the local stylesheet');
 assert(!/<(?:script|link|img)\b[^>]*(?:src|href)=["'](?:\/|https?:|\/\/)/i.test(html), 'Assets must work below the GitHub project path');
 const external = new Set(['https://sheets.google.com/create','https://script.google.com/home','https://developers.google.com/apps-script/guides/web']);
 for(const match of html.matchAll(/<a\b[^>]*href="(https?:[^\"]+)"[^>]*>/g)){
@@ -58,4 +58,4 @@ const forbidden = [
 ];
 for (const pattern of forbidden) assert(!pattern.test(sanitized), 'Private deployment data in public assets');
 assert.equal(JSON.parse(files['receiver-manifest.json']).runtimeVersion,'V8');
-console.log('Public assets: 23 reviewed local files, pinned generic app/flasher, no fetch/CDN/data transport or embedded credentials.');
+console.log('Public assets: 25 reviewed local files, pinned generic app/flasher, no fetch/CDN/data transport or embedded credentials.');

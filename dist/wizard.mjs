@@ -1,15 +1,17 @@
-import {SetupProgress,sheetUrl,sheetId,userSheetUrls,sheetBrowserUrl,newToken,deviceProperties,sheetFormula,pairingStatus} from './setup.mjs?v=0.8.0';
+import {receiverSource} from './receiver-source.mjs?v=0.9.0';
+import {googleRegistration,googleReceipt} from './google-setup.mjs?v=0.9.0';
+import {SetupProgress,sheetUrl,sheetId,userSheetUrls,sheetBrowserUrl,newToken,deviceProperties,sheetFormula,pairingStatus} from './setup.mjs?v=0.9.0';
 const $=id=>document.getElementById(id);
 const titles=['내 시트 준비','USB 보드 확인','기기 토큰 발급·등록','Wi-Fi·Google 연결','혈압계 등록·수신 확인','사용자별 시트 링크·LCD QR'];
 const short=['시트 준비','보드 확인','토큰 등록','Wi-Fi 연결','혈압계 연결','시트 링크·QR'];
-const errors={invalid_sheet_url:'Google 시트의 전체 주소를 입력하세요.',invalid_token:'64자리 소문자 토큰을 입력하거나 새로 만들어 주세요.',invalid_devices:'기존 DEVICES_JSON 전체가 올바른 JSON인지 확인하세요.',device_already_registered:'같은 보드 ID가 이미 있습니다. 기존 값을 유지하거나 교체 확인란을 직접 선택하세요.',devices_too_large:'Google 속성 값의 크기 한도를 넘었습니다. 등록 목록을 확인하세요.',random_unavailable:'안전한 난수를 만들 수 없습니다. 최신 Chrome·Edge에서 HTTPS 주소로 여세요.'};
+const errors={invalid_setup_result:'이번에 복사한 등록 값에 대한 Google 준비 결과인지 확인하세요. 다른 보드·시트 또는 이전 결과는 사용할 수 없습니다.',invalid_sheet_url:'Google 시트의 전체 주소를 입력하세요.',invalid_token:'64자리 소문자 토큰을 입력하거나 새로 만들어 주세요.',invalid_devices:'기존 DEVICES_JSON 전체가 올바른 JSON인지 확인하세요.',device_already_registered:'같은 보드 ID가 이미 있습니다. 기존 값을 유지하거나 교체 확인란을 직접 선택하세요.',devices_too_large:'Google 속성 값의 크기 한도를 넘었습니다. 등록 목록을 확인하세요.',random_unavailable:'안전한 난수를 만들 수 없습니다. 최신 Chrome·Edge에서 HTTPS 주소로 여세요.'};
 export function createWizard({getState,tokenChanged,test,refresh,notice}){
- const progress=new SetupProgress();let step=1,active=true,linkDirty=false,copied='',testAt=0,timeout=false;
+ const progress=new SetupProgress();let step=1,active=true,linkDirty=false,copied='',testAt=0,timeout=false,setupId='',googleCard='',receiptVerified=false;
  const identity=()=>{const b=getState().board;return b?[b.bridgeId,b.meterId].join('|'):'';};
  const hint=(text='')=>{$('wizard-notice').textContent=text;};
  const stopped=()=>getState().busy;
  function fail(error){hint(errors[error.message]||'입력값과 USB 연결을 확인하세요.');}
- function invalidate(){copied='';$('registration-confirmed').checked=false;progress.invalidateRegistration();render();}
+ function invalidate(){setupId='';googleCard='';receiptVerified=false;$('google-result').value='';$('google-result-status').textContent='Google에서 준비를 마친 뒤 결과를 붙여넣으세요.';copied='';$('registration-confirmed').checked=false;progress.invalidateRegistration();render();}
  function wipe(){
   $('token').value='';$('token').type='password';$('toggle-token').textContent='토큰 보기';$('toggle-token').setAttribute('aria-pressed','false');
   $('password').value='';$('existing-devices').value='';$('rotate-token').checked=false;$('replace-device').checked=false;$('devices-reviewed').checked=false;invalidate();
@@ -44,7 +46,8 @@ export function createWizard({getState,tokenChanged,test,refresh,notice}){
   const tokenAllowed=ready&&!replace&&(!b.hasSavedToken||$('rotate-token').checked);
   $('generate-token').disabled=busy||!tokenAllowed;$('token').disabled=busy||!ready||(active&&(keep||!tokenAllowed));$('toggle-token').disabled=$('token').disabled;
   $('copy-devices').disabled=busy||!ready||replace||!sid||!$('devices-reviewed').checked||!/^[a-f0-9]{64}$/.test(tokenValue());
-  $('registration-confirmed').disabled=busy||!copied;$('wizard-test').disabled=busy||!connected||!b?.configured||dirty||progress.testPending;$('wizard-refresh').disabled=busy||!connected;
+  $('copy-google-registration').disabled=busy||!ready||replace||!sid||!/^[a-f0-9]{64}$/.test(tokenValue());$('google-result').disabled=busy||!googleCard;$('apply-google-result').disabled=busy||!googleCard;$('copy-receiver-code').disabled=busy;
+  $('registration-confirmed').disabled=busy||!copied&&!receiptVerified;$('wizard-test').disabled=busy||!connected||!b?.configured||dirty||progress.testPending;$('wizard-refresh').disabled=busy||!connected;
   const checklist=progress.checklist(b,connected),labels={pending:'확인 전',user:'직접 확인',board:'보드 확인',saved:'저장 정보 있음'};
   if(linkDirty)checklist[5]='pending';
   for(let i=0;i<6;i++){$('progress-'+(i+1)).textContent=labels[checklist[i]];document.querySelector(`[data-step="${i+1}"]`).classList.toggle('verified',checklist[i]==='board');}
@@ -88,9 +91,13 @@ export function createWizard({getState,tokenChanged,test,refresh,notice}){
  $('mode-wizard').onclick=()=>mode(true);$('mode-manage').onclick=()=>mode(false);
  for(const b of document.querySelectorAll('[data-step]'))b.onclick=()=>show(Number(b.dataset.step));
  $('wizard-back').onclick=()=>show(step-1);$('wizard-next').onclick=next;
- $('setup-sheet').addEventListener('input',()=>{progress.sheetConfirmed=false;$('sheet-confirmed').checked=false;progress.invalidateRegistration();copied='';$('registration-confirmed').checked=false;render();});
+ $('setup-sheet').addEventListener('input',()=>{progress.sheetConfirmed=false;$('sheet-confirmed').checked=false;invalidate();});
  $('sheet-confirmed').onchange=()=>{try{progress.setSheet($('setup-sheet').value);progress.sheetConfirmed=$('sheet-confirmed').checked;render();}catch(e){$('sheet-confirmed').checked=false;fail(e);}};
  $('setup-purpose').onchange=()=>{invalidate();};
+ $('copy-receiver-code').onclick=()=>copy(receiverSource,'수신기 코드를 복사했습니다. 시트의 확장 프로그램 → Apps Script에서 Code.gs 전체를 교체하고 저장하세요. 토큰은 코드에 넣지 않습니다.');
+ $('copy-google-registration').onclick=async()=>{try{if(!setupId)setupId=newToken().slice(0,32);const value=googleRegistration(getState().board,tokenValue(),setupId);if(await copy(value,'Google 설정용 등록 값을 복사했습니다. Google 시트의 BP to Sheets → 처음 설정 창에 붙여넣으세요.')){googleCard=value;copied='';receiptVerified=false;progress.invalidateRegistration();$('registration-confirmed').checked=false;$('google-result').value='';$('google-result-status').textContent='Google 설정 창의 준비 결과를 아래에 붙여넣으세요. 결과에는 토큰이 없습니다.';render();}}catch(e){fail(e);}};
+ $('google-result').addEventListener('input',()=>{receiptVerified=false;progress.invalidateRegistration();$('registration-confirmed').checked=false;render();});
+ $('apply-google-result').onclick=()=>{try{const urls=googleReceipt($('google-result').value,{board:getState().board,setupId,sheet:progress.sheet||$('setup-sheet').value});if(googleCard!==googleRegistration(getState().board,tokenValue(),setupId))throw Error('invalid_setup_result');receiptVerified=true;for(let i=0;i<2;i++)$('sheet-user-'+(i+1)).value=urls[i];linkDirty=true;$('google-result').value='';$('google-result-status').textContent='이 보드·시트의 준비 결과를 확인했습니다. 아래 Google 등록 확인란을 선택하세요. 사용자별 링크는 6단계에서 USB로 저장합니다. 실제 Google 연결은 4단계에서 시험합니다.';render();}catch(e){receiptVerified=false;$('registration-confirmed').checked=false;progress.invalidateRegistration();fail(e);}};
  $('copy-sheet-id').onclick=()=>copy(sheetId($('setup-sheet').value),'시트 ID를 복사했습니다. Google 스크립트 속성에 붙여넣으세요.');
  $('generate-token').onclick=()=>{try{$('token').value=newToken();tokenChanged();invalidate();hint('새 토큰을 만들었습니다. Google 등록 값을 복사해 Google에 먼저 저장하세요.');}catch(e){fail(e);}};
  $('keep-token').onchange=()=>{if($('keep-token').checked){$('token').value='';tokenChanged();}invalidate();};
@@ -98,12 +105,12 @@ export function createWizard({getState,tokenChanged,test,refresh,notice}){
  $('token').addEventListener('input',invalidate);
  for(const id of ['existing-devices','replace-device','devices-reviewed'])$(id).addEventListener(id==='existing-devices'?'input':'change',invalidate);
  $('copy-devices').onclick=async()=>{try{const value=registrationValue();if(await copy(value,'등록 값을 복사했습니다. Google의 DEVICES_JSON 값에 붙여넣고 저장하세요.')){copied=value;$('copy-registration-status').textContent='등록 값을 복사했습니다. Google에 저장한 뒤 아래 확인란을 선택하세요.';render();}}catch(e){fail(e);}};
- $('registration-confirmed').onchange=()=>{try{if($('registration-confirmed').checked&&copied===registrationValue())progress.confirmRegistration(tokenValue(),false);else progress.invalidateRegistration();render();}catch(e){fail(e);}};
+ $('registration-confirmed').onchange=()=>{try{if($('registration-confirmed').checked&&(copied&&copied===registrationValue()||receiptVerified&&googleCard===googleRegistration(getState().board,tokenValue(),setupId)))progress.confirmRegistration(tokenValue(),false);else progress.invalidateRegistration();render();}catch(e){fail(e);}};
  $('clear-registration').onclick=()=>{wipe();tokenChanged();hint('이 페이지에 입력한 비밀 값을 지웠습니다. 보드와 Google 값은 바꾸지 않았습니다.');};
  $('toggle-token').onclick=()=>{const show=$('token').type==='password';$('token').type=show?'text':'password';$('toggle-token').textContent=show?'토큰 숨기기':'토큰 보기';$('toggle-token').setAttribute('aria-pressed',String(show));};
  $('wizard-test').onclick=test;$('wizard-refresh').onclick=refresh;
  for(let i=1;i<=2;i++){$('sheet-user-'+i).addEventListener('input',()=>{linkDirty=true;render();});$('copy-formula-'+i).onclick=()=>copy(sheetFormula(i),`사용자 ${i} 탭의 A2에 붙여넣으세요.`);}
  window.addEventListener('pagehide',()=>{wipe();progress.reset();});
  mount();render();
- return {openBoard:()=>{mode(true);show(2);},render,observe,maySave,settingsChanged:()=>progress.settingsChanged(),active:()=>active,expectedSheet:()=>active?progress.sheet:'',linksSaved:()=>{linkDirty=false;render();},startTest:()=>{progress.startTest();testAt=Date.now();timeout=false;},testFailed:()=>{progress.testPending=false;timeout=true;render();},event:e=>{progress.event(e);render();},configured:()=>{progress.test='';progress.testPending=false;progress.registration='saved';copied='';$('existing-devices').value='';$('registration-confirmed').checked=false;$('keep-token').checked=true;$('token').type='password';$('toggle-token').textContent='토큰 보기';$('toggle-token').setAttribute('aria-pressed','false');},clear:wipe};
+ return {openBoard:()=>{mode(true);show(2);},render,observe,maySave,settingsChanged:()=>progress.settingsChanged(),active:()=>active,expectedSheet:()=>active?progress.sheet:'',linksSaved:()=>{linkDirty=false;render();},startTest:()=>{progress.startTest();testAt=Date.now();timeout=false;},testFailed:()=>{progress.testPending=false;timeout=true;render();},event:e=>{progress.event(e);render();},configured:()=>{setupId='';googleCard='';receiptVerified=false;$('google-result').value='';progress.test='';progress.testPending=false;progress.registration='saved';copied='';$('existing-devices').value='';$('registration-confirmed').checked=false;$('keep-token').checked=true;$('token').type='password';$('toggle-token').textContent='토큰 보기';$('toggle-token').setAttribute('aria-pressed','false');},clear:wipe};
 }

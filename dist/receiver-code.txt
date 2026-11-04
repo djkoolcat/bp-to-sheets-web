@@ -174,6 +174,12 @@ function readConfig_() {
       !plainObject_(devices) || Object.keys(devices).length === 0) {
     fail_('configuration_error');
   }
+  validateDevices_(devices);
+  return {spreadsheetId: spreadsheetId, sheetName: sheetName, devices: devices};
+}
+
+function validateDevices_(devices) {
+  if(!plainObject_(devices)) fail_('configuration_error');
   Object.keys(devices).forEach(function (bridgeId) {
     const device = devices[bridgeId];
     if (!BP_BRIDGE_ID_.test(bridgeId) || !plainObject_(device) ||
@@ -183,7 +189,7 @@ function readConfig_() {
     }
     if(device.meterIds!==undefined&&(!Array.isArray(device.meterIds)||!device.meterIds.length||device.meterIds.length>8||device.meterIds.some(id=>typeof id!=='string'||!BP_SAFE_ID_.test(id))||new Set(device.meterIds).size!==device.meterIds.length||device.meterIds.indexOf(device.meterId)<0))fail_('configuration_error');
   });
-  return {spreadsheetId: spreadsheetId, sheetName: sheetName, devices: devices};
+  if(JSON.stringify(devices).length>9000) fail_('configuration_error');
 }
 
 function authenticate_(request, devices) {
@@ -480,8 +486,12 @@ function setupMonitoring(){
 /** Editor-only: one clock trigger, as the owner, every 5 minutes. */
 function installMonitoringTrigger(){
   setupMonitoring();
-  if(!ScriptApp.getProjectTriggers().some(t=>t.getHandlerFunction()==='checkDeviceHealth'))ScriptApp.newTrigger('checkDeviceHealth').timeBased().everyMinutes(5).create();
+  const lock=LockService.getScriptLock();if(!lock.tryLock(BP_LOCK_WAIT_MS_))fail_('busy');
+  try{ensureMonitoringTrigger_();}finally{lock.releaseLock();}
   return 'monitoring_trigger_ready';
+}
+function ensureMonitoringTrigger_(){
+  if(!ScriptApp.getProjectTriggers().some(t=>t.getHandlerFunction()==='checkDeviceHealth'))ScriptApp.newTrigger('checkDeviceHealth').timeBased().everyMinutes(5).create();
 }
 function checkDeviceHealth(){
   const config=readConfig_(),lock=LockService.getScriptLock();if(!lock.tryLock(BP_LOCK_WAIT_MS_))return;
@@ -496,4 +506,91 @@ function checkDeviceHealth(){
       SpreadsheetApp.flush();row[3]='응답 없음';monitorWrite_(status.sheet,i+2,row);trimMonitor_(history.sheet,row[0]);
     });SpreadsheetApp.flush();
   }finally{lock.releaseLock();}
+}
+
+// Editor-only setup for a spreadsheet-bound copy. doGet/doPost never dispatch
+// to these functions and never return setup HTML, credentials or settings.
+function onOpen() {
+  SpreadsheetApp.getUi().createMenu('BP to Sheets').addItem('처음 설정', 'setupReceiver').addToUi();
+}
+function setupReceiver() {
+  if(!SpreadsheetApp.getActiveSpreadsheet()) throw new Error('시트의 확장 프로그램 → Apps Script에서 이 코드를 설치하세요.');
+  SpreadsheetApp.getUi().showModalDialog(HtmlService.createHtmlOutput(receiverSetupHtml_()).setWidth(570).setHeight(680),'BP to Sheets · Google 준비');
+}
+function setupRegistration_(text) {
+  if(typeof text!=='string'||text.length>2048) fail_('invalid_request');
+  let r;try{r=JSON.parse(text);}catch(ignored){fail_('invalid_request');}
+  if(!plainObject_(r)||r.schemaVersion!==1||typeof r.bridgeId!=='string'||!BP_BRIDGE_ID_.test(r.bridgeId)||typeof r.meterId!=='string'||!BP_SAFE_ID_.test(r.meterId)||typeof r.token!=='string'||!BP_TOKEN_.test(r.token)||typeof r.setupId!=='string'||!/^[a-f0-9]{32}$/.test(r.setupId)||Object.keys(r).sort().join(',')!=='bridgeId,meterId,schemaVersion,setupId,token') fail_('invalid_request');
+  return r;
+}
+function userViewFormula_(name,user) {
+  const escaped=name.replace(/'/g,"''");
+  return '=IFNA(FILTER(\''+escaped+'\'!A2:H,ARRAYFORMULA(TO_TEXT(\''+escaped+'\'!F2:F))="'+user+'"),"")';
+}
+function preflightUserView_(sheet,formula) {
+  if(!sheet||sheet.getLastRow()===0&&sheet.getLastColumn()===0)return;
+  if(sheet.getLastColumn()!==8||JSON.stringify(sheet.getRange(1,1,1,8).getValues()[0])!==JSON.stringify(BP_HEADERS_))fail_('sheet_corrupt');
+  const actual=sheet.getRange(2,1).getFormula();
+  if(actual!==formula&&(sheet.getLastRow()>1||actual!==''))fail_('sheet_corrupt');
+}
+function receiverSetupResult_(book,registration) {
+  const urls=[1,2].map(function(user){return 'https://docs.google.com/spreadsheets/d/'+book.getId()+'/edit#gid='+book.getSheetByName('사용자 '+user+' 혈압기록').getSheetId();});
+  return {schemaVersion:1,kind:'bp-to-sheets-google-setup',setupId:registration.setupId,spreadsheetId:book.getId(),bridgeId:registration.bridgeId,meterId:registration.meterId,sheetUserUrls:urls};
+}
+function configureReceiver(input) {
+  let lock,locked=false;
+  try {
+    const book=SpreadsheetApp.getActiveSpreadsheet();
+    if(!book||!plainObject_(input)||typeof input.replaceExisting!=='boolean')fail_('invalid_request');
+    const registration=setupRegistration_(input.registration),props=PropertiesService.getScriptProperties();
+    lock=LockService.getScriptLock();if(!lock.tryLock(BP_LOCK_WAIT_MS_))fail_('busy');locked=true;
+    const savedId=props.getProperty('SPREADSHEET_ID');
+    if(savedId&&savedId!==book.getId())return {ok:false,error:'different_spreadsheet'};
+    const name=props.getProperty('SHEET_NAME')||'혈압기록';
+    if(name!=='혈압기록')return {ok:false,error:'custom_sheet_name'};
+    let devices;try{devices=JSON.parse(props.getProperty('DEVICES_JSON')||'{}');}catch(ignored){fail_('configuration_error');}
+    validateDevices_(devices);
+    const old=devices[registration.bridgeId];
+    if(old&&(old.token!==registration.token||old.meterId!==registration.meterId)&&!input.replaceExisting)return {ok:false,error:'replacement_required'};
+    const ids=Array.from(new Set((old?(old.meterIds||[old.meterId]):[]).concat([registration.meterId])));
+    devices[registration.bridgeId]=Object.assign({},old||{},{token:registration.token,meterId:registration.meterId},ids.length>1?{meterIds:ids}:{});
+    validateDevices_(devices);
+    // Preflight every nonempty tab before any settings or sheet writes.
+    const data=book.getSheetByName(name);if(data&&(data.getLastRow()||data.getLastColumn()))readRows_(data);
+    [['기기상태',BP_STATUS_HEADERS_],['장애이력',BP_EVENT_HEADERS_]].forEach(function(item){const sheet=book.getSheetByName(item[0]);if(sheet&&(sheet.getLastRow()||sheet.getLastColumn()))monitorTable_(book,item[0],item[1],false);});
+    [1,2].forEach(function(user){preflightUserView_(book.getSheetByName('사용자 '+user+' 혈압기록'),userViewFormula_(name,user));});
+    let original=data;
+    if(!original){const tabs=book.getSheets();if(tabs.length===1&&tabs[0].getLastRow()===0&&tabs[0].getLastColumn()===0){original=tabs[0];original.setName(name);}else original=book.insertSheet(name);}
+    if(original.getLastRow()===0){original.getRange(1,1,1,8).setValues([BP_HEADERS_.slice()]);original.setFrozenRows(1);}
+    readRows_(original);
+    [1,2].forEach(function(user){const title='사용자 '+user+' 혈압기록';let sheet=book.getSheetByName(title);if(!sheet)sheet=book.insertSheet(title);if(sheet.getLastRow()===0){sheet.getRange(1,1,1,8).setValues([BP_HEADERS_.slice()]);sheet.setFrozenRows(1);}if(!sheet.getRange(2,1).getFormula())sheet.getRange(2,1).setFormula(userViewFormula_(name,user));});
+    monitorTable_(book,'기기상태',BP_STATUS_HEADERS_,true);monitorTable_(book,'장애이력',BP_EVENT_HEADERS_,true);
+    SpreadsheetApp.flush();
+    // Write merged authentication settings only after preserving/validating tabs.
+    props.setProperties({SPREADSHEET_ID:book.getId(),SHEET_NAME:name,DEVICES_JSON:JSON.stringify(devices)},false);
+    const checked=readConfig_();if(checked.spreadsheetId!==book.getId()||checked.devices[registration.bridgeId].token!==registration.token)fail_('verification_failed');
+    ensureMonitoringTrigger_();
+    ['사용자 1 혈압기록','사용자 2 혈압기록',name,'기기상태','장애이력'].forEach(function(title,index){book.setActiveSheet(book.getSheetByName(title));book.moveActiveSheet(index+1);});
+    book.setActiveSheet(book.getSheetByName('사용자 1 혈압기록'));
+    return {ok:true,result:receiverSetupResult_(book,registration)};
+  } catch(error) {
+    // Never echo pasted input or a Google exception that could include it.
+    return {ok:false,error:error&&BP_ERRORS_.indexOf(error.bpCode)>=0?error.bpCode:'setup_incomplete'};
+  } finally {if(locked){try{lock.releaseLock();}catch(ignored){}}}
+}
+function receiverSetupHtml_() {
+  return `<!doctype html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><style>
+body{font:17px/1.7 system-ui,sans-serif;color:#183c3b;margin:24px;background:#f6faf7}h2{font-size:24px}textarea,.secret{width:100%;box-sizing:border-box;font:14px/1.6 monospace;min-height:130px;border:1px solid #a9c2b5;border-radius:8px;padding:12px}button{font:inherit;padding:12px 20px;background:#146b5c;color:white;border:0;border-radius:8px;margin:12px 0;cursor:pointer}label{display:block;margin:16px 0}input{width:20px;height:20px;vertical-align:middle}.secret{min-height:52px;height:auto;padding:12px;font:15px monospace;border:1px solid #a9c2b5;border-radius:8px}p{margin:10px 0}.small{font-size:14px}#result[hidden]{display:none}#status{font-weight:650}button:disabled{opacity:.5}</style></head><body>
+<h2>기기 등록 값을 한 번 붙여넣으세요</h2><p>웹 설정 3단계의 <strong>Google 설정용 등록 값 복사</strong>로 복사한 값을 입력하세요.</p>
+<input id="registration" class="secret" type="password" aria-label="Google 설정용 등록 값" maxlength="2048" autocomplete="off" spellcheck="false"><p class="small">비밀 토큰을 포함하므로 붙여넣은 값은 가려서 표시합니다.</p>
+<label><input id="replace" type="checkbox"> 같은 보드의 기존 토큰·혈압계 등록을 교체합니다. 처음 등록할 때는 선택하지 마세요.</label>
+<p class="small">다른 기기 등록과 기존 기록은 유지합니다. 이 값에는 비밀 토큰이 있으니 채팅·소스 코드에 붙여넣지 마세요.</p>
+<button id="save">이 시트에 기기 등록·탭 준비</button><p id="status" role="status" aria-live="polite"></p>
+<div id="result" hidden><p>Google 준비를 마쳤습니다. 아래 결과를 복사해 웹 설정 3단계의 <strong>Google 준비 결과</strong>에 붙여넣으세요. 결과에는 토큰이 없습니다.</p><textarea id="receipt" readonly aria-label="Google 준비 결과"></textarea><button id="copy">준비 결과 선택</button><p class="small">선택 후 Ctrl+C 또는 ⌘C로 복사하세요. 다음으로 Apps Script에서 웹 앱을 배포해야 합니다.</p></div>
+<script>
+var save=document.getElementById('save'),status=document.getElementById('status');
+var errors={replacement_required:'같은 보드의 다른 등록이 있습니다. 교체 영향을 확인한 경우에만 위 확인란을 선택하세요.',different_spreadsheet:'이미 다른 시트를 사용하는 수신기입니다. 기존 설정을 바꾸지 않았습니다. 새 시트의 확장 프로그램에서 시작하세요.',custom_sheet_name:'기존 사용자 지정 기록 탭이 있습니다. 고급 설정 안내를 이용하세요.',sheet_corrupt:'기존 탭의 열 또는 수식이 예상과 다릅니다. 내용을 지우지 말고 고급 설정 안내를 이용하세요.',busy:'다른 저장 작업 중입니다. 잠시 후 다시 눌러주세요.',invalid_request:'웹에서 등록 값을 다시 복사해 전체를 붙여넣으세요.',configuration_error:'기존 등록 정보를 확인할 수 없습니다. 기존 값을 지우지 말고 고급 안내를 이용하세요.'};
+save.onclick=function(){save.disabled=true;document.getElementById('result').hidden=true;status.textContent='기존 정보를 확인하고 준비합니다…';google.script.run.withSuccessHandler(function(r){save.disabled=false;if(!r||!r.ok){status.textContent=errors[r&&r.error]||'준비를 끝내지 못했습니다. 기존 기록을 지우지 말고 다시 확인하세요.';return;}document.getElementById('registration').value='';document.getElementById('replace').checked=false;document.getElementById('receipt').value=JSON.stringify(r.result);document.getElementById('result').hidden=false;status.textContent='등록·5개 탭·상태 검사 준비 완료';}).withFailureHandler(function(){save.disabled=false;status.textContent='Google 실행을 확인하지 못했습니다. 기록과 설정을 지우지 말고 다시 확인하세요.';}).configureReceiver({registration:document.getElementById('registration').value,replaceExisting:document.getElementById('replace').checked});};
+document.getElementById('copy').onclick=function(){var field=document.getElementById('receipt');field.focus();field.select();};
+</script></body></html>`;
 }
