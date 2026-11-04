@@ -31,8 +31,8 @@ test('Configuration acknowledgement loss times out without a blind write retry',
 test('Closing a disconnected session rejects the pending request and releases the port',async()=>{
  const p=new Port({drop:'test'}),c=new SerialClient();const d=await c.open(p);const pending=c.request('test',d);await sleep(40);const closing=c.close();await assert.rejects(pending,/usb_disconnected/);await closing;assert(!p.opened);
 });
-test('Destructive/firmware/test-fault commands are unavailable in the web client',async()=>{
- const p=new Port(),c=new SerialClient();try{await c.open(p);for(const op of ['erase','hold','resume','ack-loss-test','wifi-test-offline','register-key'])await assert.rejects(c.request(op),/invalid_operation/);assert.equal(p.received.length,1);}finally{await c.close();}
+test('Only the update hold is allowed; erase, arbitrary flash and fault commands stay unavailable',async()=>{
+ const p=new Port(),c=new SerialClient();try{const d=await c.open(p);for(const op of ['erase','flash','resume','ack-loss-test','wifi-test-offline','register-key'])await assert.rejects(c.request(op),/invalid_operation/);await c.request('hold',d);assert.equal(p.received.length,2);assert.equal(p.received[1].operation,'hold');}finally{await c.close();}
 });
 test('Logs contain only bounded operation metadata and preservation retains identity/history',()=>{
  const e=event({seq:1,boot:1,uptimeMs:100,epoch:0,code:9,a:1,b:15,token:'synthetic-secret',systolic:123});assert(e);assert(!('token'in e));assert(!('systolic'in e));assert.equal(event({...e,code:99}),null);assert(preserved(base,{...base,remembered:16}));assert(!preserved(base,{...base,hasPairingKey:false}));assert(!preserved(base,{...base,meterId:'different'}));

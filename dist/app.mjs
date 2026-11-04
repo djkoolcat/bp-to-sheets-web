@@ -1,23 +1,37 @@
-import {SerialClient,Connection,settings,preserved,event,eventText} from './serial.mjs';
-import {collectRecords,csvBytes,xlsxBytes,fileName} from './record-export.mjs';
-import {createWizard} from './wizard.mjs';
-import {userSheetUrls,linksPreserved} from './setup.mjs';
+import {SerialClient,Connection,settings,preserved,event,eventText} from './serial.mjs?v=0.6.0';
+import {collectRecords,csvBytes,xlsxBytes,fileName} from './record-export.mjs?v=0.6.0';
+import {createWizard} from './wizard.mjs?v=0.6.0';
+import {userSheetUrls,linksPreserved} from './setup.mjs?v=0.6.0';
+import {release} from './firmware-catalog.mjs?v=0.6.0';
+import {compatible,compareVersion} from './firmware-policy.mjs?v=0.6.0';
+import {FirmwareUpdate} from './firmware-update.mjs?v=0.6.0';
 const $=id=>document.getElementById(id);
-let board=null,connected=false,busy=false,dirty=false,polling=false,connection,wizard;
+let board=null,connected=false,busy=false,dirty=false,polling=false,connection,wizard,updater;
 const seen=new Set();
 const messages={invalid_ssid:'Wi-Fi 이름은 1~32바이트로 입력하세요.',invalid_password:'Wi-Fi 비밀번호는 8~63바이트로 입력하세요.',invalid_token:'Google에 등록한 64자리 소문자 토큰을 입력하세요.',invalid_endpoint:'Google Apps Script의 HTTPS /exec 주소를 입력하세요.',usb_timeout:'보드 응답을 확인하지 못했습니다. 설정 저장 결과는 재연결 후 확인하세요.',usb_disconnected:'USB 연결이 끊겼습니다. 보드를 다시 선택해 주세요.',unsupported_board:'이 설정 화면에서 지원하는 보드가 아닙니다.',invalid_usb_reply:'보드 응답을 확인할 수 없습니다. 다른 USB 장치를 선택했는지 확인하세요.',session_changed:'보드가 재시작했습니다. 다시 연결해 주세요.',busy:'보드 작업이 끝난 뒤 다시 시도하세요.',device_busy_timeout:'혈압계 통신이 끝난 뒤 보드를 다시 연결해 주세요.',preservation_failed:'저장 후 기존 기록·설정 확인이 필요합니다. 초기화하지 마세요.',invalid_configuration:'입력값을 확인하세요.',queue_not_ready:'보드 기록 저장소 확인이 필요합니다. 초기화하지 마세요.'};
 Object.assign(messages,{export_update_required:'기록 내보내기는 S3 hem-0.7.0 이상에서 지원합니다. 펌웨어를 먼저 업데이트하세요.',invalid_export_reply:'기록 응답을 끝까지 확인하지 못해 파일을 만들지 않았습니다.',snapshot_changed:'읽는 동안 기록이나 전송 상태가 바뀌었습니다. 잠시 후 다시 저장해 주세요.',export_session_changed:'보드가 재시작하거나 바뀌었습니다. 다시 연결해 주세요.'});
 Object.assign(messages,{invalid_sheet_tabs:'같은 시트의 서로 다른 사용자 탭 주소 두 개를 입력하세요. 각 주소에 gid가 필요합니다.',invalid_sheet_url:'Google 시트 주소를 확인하세요.',wrong_sheet:'1단계에서 선택한 시트와 다른 파일입니다. 사용자 탭의 주소를 다시 확인하세요.',sheet_link_commit_failed:'보드에서 링크 저장을 확인하지 못했습니다. 다시 읽어 확인한 뒤 필요하면 직접 저장하세요.'});
+Object.assign(messages,{firmware_manifest:'배포 정보가 올바르지 않습니다. 업데이트하지 않았습니다.',firmware_image:'보드에 맞는 펌웨어 파일인지 확인할 수 없습니다.',firmware_hash:'펌웨어 파일 검증에 실패했습니다. 페이지를 새로 열어 다시 확인하세요.',partition_layout:'확인된 S3 LCD 메모리 구성과 다릅니다. 기록하지 않았습니다.',partition_checksum:'보드 메모리 구성을 정확히 읽지 못했습니다. 기록하지 않았습니다.',secure_board_unsupported:'보드의 보안 설정이 이 업데이트 방식과 다릅니다. 기록하지 않았습니다.',board_changed:'연결된 보드가 바뀌었습니다. 원래 보드를 다시 선택하세요.',firmware_not_newer:'같거나 더 최신인 버전입니다. 이전 버전으로 내리지 않습니다.',firmware_reconnect:'기록은 끝났지만 재연결 확인이 남았습니다. 아래에서 USB를 다시 선택하세요.'});
 function notice(text,error=false){$('notice').textContent=text;$('notice').classList.toggle('error',error);}
 function error(e){notice(e.name==='NotFoundError'?'USB 장치 선택을 취소했습니다.':e.name==='SecurityError'||e.name==='NotAllowedError'?'USB 권한을 허용하고 데스크톱 Chrome·Edge의 새 탭에서 다시 열어주세요.':messages[e.message]||'요청을 완료하지 못했습니다. USB 연결과 입력값을 확인해 주세요.',true);}
 function controls(){
  for(const id of ['export-user','export-csv','export-xlsx'])$(id).disabled=busy||!connected||!board?.queueReady||board?.recordsExportVersion!==1;
- $('export-help').textContent=!connected?'USB 보드를 연결하면 기록을 파일로 저장할 수 있습니다.':board.recordsExportVersion!==1?'기록 내보내기는 S3 hem-0.7.0 이상에서 지원합니다. 설치형 앱으로 먼저 업데이트하세요.':'보드에 남아 있는 최근 최대 128건입니다. 내려받아도 보드 기록과 전송 대기 상태는 그대로입니다.';
+ $('export-help').textContent=!connected?'USB 보드를 연결하면 기록을 파일로 저장할 수 있습니다.':board.recordsExportVersion!==1?'기록 내보내기는 S3 hem-0.7.0 이상에서 지원합니다. 아래에서 펌웨어를 업데이트하세요.':'보드에 남아 있는 최근 최대 128건입니다. 내려받아도 보드 기록과 전송 대기 상태는 그대로입니다.';
  $('connect').disabled=busy||connected||!supported;$('disconnect').disabled=busy||!connection?.enabled;
  $('fields').disabled=busy||!connected||!board?.queueReady;
  $('test').disabled=busy||!connected||!board?.configured||dirty;
  $('history').disabled=busy||!connected||!Number.isInteger(board?.logNewestSeq);
- meterControls();wizard?.render();
+ meterControls();firmwareControls();wizard?.render();
+}
+function firmwareControls(){
+ $('firmware-current').textContent=connected?board.firmwareVersion:'USB 연결 후 표시';$('firmware-latest').textContent=release.version;
+ const supported=connected&&compatible(board,release),comparison=supported?compareVersion(board.firmwareVersion,release.version):null;
+ $('firmware-reinstall-row').hidden=comparison!==0;
+ $('firmware-reinstall').disabled=busy||!supported;
+ $('firmware-start').disabled=busy||!supported||dirty||!board.queueReady||comparison>0||comparison===0&&!$('firmware-reinstall').checked||!!updater?.recoverable;
+ $('firmware-retry').hidden=!updater?.recoverable;$('firmware-retry').disabled=busy;
+ $('firmware-retry').textContent=updater?.verified?'USB 다시 선택 · 보존 확인':'USB 다시 선택 · 업데이트 재시도';
+ $('firmware-help').textContent=!connected?'USB 보드를 연결하면 현재 버전과 최신 버전을 비교합니다.':!supported?'웹 업데이트는 Waveshare S3 LCD 1.54 비터치 보드용입니다. 기존 C3 설정 기능은 그대로 사용할 수 있습니다.':dirty?'입력 중인 Wi-Fi·토큰 설정을 먼저 저장하거나 지워주세요.':comparison>0?'현재 보드가 배포본보다 새롭습니다. 이전 버전으로 내리지 않습니다.':comparison===0?'최신 버전입니다. 필요한 경우 같은 버전을 다시 설치할 수 있습니다.':'새 버전이 있습니다. 기존 기록·설정·혈압계 연결 키를 보존하며 업데이트합니다.';
 }
 function state(d){
  board=d;wizard?.observe(d);$('pending').textContent=d.pending;$('remembered').textContent=d.remembered;$('version').textContent=d.firmwareVersion;
@@ -37,10 +51,27 @@ function addEvent(e){
 }
 const client=new SerialClient({onEvent:e=>{addEvent(e);if(connected)wizard?.event(e);},onDisconnect:()=>{connected=false;$('badge').textContent=connection?.enabled?'USB 재연결 중':'USB 연결 해제';$('badge').classList.remove('online');$('usb').textContent='마지막 확인 정보';controls();}});
 connection=new Connection(client,{getPorts:()=>navigator.serial.getPorts()});
+updater=new FirmwareUpdate({connection,client,getPorts:()=>navigator.serial.getPorts(),progress:(stage,percent)=>{$('firmware-progress').hidden=false;$('firmware-progress').value=percent;$('firmware-status').textContent=stage+(stage==='업데이트 중'?` · ${percent}%`:'');}});
 const supported=isSecureContext&&'serial'in navigator;$('unsupported').hidden=supported;
 async function work(run){if(busy)return;busy=true;controls();try{while(polling)await new Promise(r=>setTimeout(r,20));await run();}catch(e){error(e);}finally{busy=false;controls();}}
 wizard=createWizard({getState:()=>({board,connected,busy,dirty}),tokenChanged:()=>{dirty=true;controls();},test:()=>runTest(),refresh:()=>work(async()=>{state(await connection.read('info'));notice('보드의 현재 등록 상태와 저장 정보를 다시 읽었습니다.');}),notice});
 controls();
+$('firmware-reinstall').onchange=firmwareControls;
+async function updateFirmware(retry=false){return work(async()=>{
+ try{
+  $('firmware-status').classList.remove('error');
+  let after;
+  if(retry){const port=await navigator.serial.requestPort({filters:[{usbVendorId:0x303a},{usbVendorId:0x1a86},{usbVendorId:0x10c4},{usbVendorId:0x0403}]});after=await updater.retry(port);}
+  else{if(dirty)throw Error('invalid_configuration');after=await updater.start(board,{reinstall:$('firmware-reinstall').checked});}
+  connected=true;state(after);$('firmware-reinstall').checked=false;$('badge').textContent='USB 연결됨';$('badge').classList.add('online');$('usb').textContent='연결됨';
+  $('firmware-status').textContent='업데이트 완료 · 기록·설정 보존 확인';notice('최신 펌웨어와 기존 기록·설정 보존을 확인했습니다. 보드의 자동 수신은 계속됩니다.');
+ }catch(e){
+  connected=connection.enabled&&!!client.writer;
+  $('firmware-status').textContent=messages[e.message]||'업데이트 확인이 중단됐습니다. 페이지를 유지하고 USB 연결을 다시 선택하세요.';$('firmware-status').classList.add('error');throw e;
+ }
+});}
+$('firmware-start').onclick=()=>updateFirmware();$('firmware-retry').onclick=()=>updateFirmware(true);
+window.addEventListener('beforeunload',e=>{if(updater?.recoverable){e.preventDefault();e.returnValue='';}});
 $('connect').onclick=()=>work(async()=>{
  const port=await navigator.serial.requestPort({filters:[{usbVendorId:0x303a},{usbVendorId:0x1a86},{usbVendorId:0x10c4},{usbVendorId:0x0403}]});
  notice('보드 버전과 기록 보관 상태를 확인하고 있습니다…');const d=await connection.attach(port);board=d;connected=true;dirty=false;seen.clear();$('events').replaceChildren();

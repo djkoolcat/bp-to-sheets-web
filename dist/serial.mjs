@@ -1,4 +1,4 @@
-import {sheetUrl,userSheetUrls} from './setup.mjs';
+import {sheetUrl,userSheetUrls} from './setup.mjs?v=0.6.0';
 const encoder=new TextEncoder();
 const wait=ms=>new Promise(r=>setTimeout(r,ms));
 const fail=code=>{throw Error(code);};
@@ -81,7 +81,7 @@ export class SerialClient{
   const generation=this.generation;
   const run=async()=>{
    if(!this.writer||this.closing||generation!==this.generation)fail('usb_disconnected');
-   if(!['info','configure','test','logs','sheet-link','records','meter-model','meter-target','audio'].includes(op))fail('invalid_operation');
+   if(!['info','configure','test','logs','sheet-link','records','meter-model','meter-target','audio','hold'].includes(op))fail('invalid_operation');
    const id=Array.from(crypto.getRandomValues(new Uint8Array(16)),v=>v.toString(16).padStart(2,'0')).join('');
    const payload={schemaVersion:1,requestId:id,operation:op,...fields};if(board){payload.bridgeId=board.bridgeId;payload.session=board.session;}
    const bytes=encoder.encode('BPUSB '+JSON.stringify(payload)+'\n');if(bytes.length>1500)fail('invalid_configuration');

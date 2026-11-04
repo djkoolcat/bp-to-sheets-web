@@ -1,0 +1,10 @@
+import {build} from 'esbuild';
+import {readFile,writeFile,mkdir} from 'node:fs/promises';
+import {fileURLToPath} from 'node:url';
+const root=fileURLToPath(new URL('../',import.meta.url));
+await mkdir(root+'dist/flasher',{recursive:true});
+await build({entryPoints:[root+'tools/flasher-entry.mjs'],outfile:root+'dist/flasher/esptool.mjs',bundle:true,minify:true,format:'esm',platform:'browser',target:'es2022',legalComments:'eof',logLevel:'warning'});
+const licenses=[];
+for(const [name,file] of [['esptool-js 0.7.1','esptool-js/LICENSE'],['pako','pako/LICENSE'],['atob-lite','atob-lite/LICENSE.md'],['@noble/hashes 2.0.1','@noble/hashes/LICENSE']])licenses.push(name+'\n'+await readFile(root+'node_modules/'+file,'utf8'));
+await writeFile(root+'dist/flasher/LICENSES.txt',licenses.join('\n\n'));
+console.log('Local browser flasher bundled; no external CDN or network transport.');
