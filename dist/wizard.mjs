@@ -1,4 +1,4 @@
-import {SetupProgress,sheetUrl,sheetId,userSheetUrls,sheetBrowserUrl,newToken,deviceProperties,sheetFormula,pairingStatus} from './setup.mjs?v=0.6.0';
+import {SetupProgress,sheetUrl,sheetId,userSheetUrls,sheetBrowserUrl,newToken,deviceProperties,sheetFormula,pairingStatus} from './setup.mjs?v=0.7.0';
 const $=id=>document.getElementById(id);
 const titles=['내 시트 준비','USB 보드 확인','기기 토큰 발급·등록','Wi-Fi·Google 연결','혈압계 등록·수신 확인','사용자별 시트 링크·LCD QR'];
 const short=['시트 준비','보드 확인','토큰 등록','Wi-Fi 연결','혈압계 연결','시트 링크·QR'];
@@ -105,5 +105,5 @@ export function createWizard({getState,tokenChanged,test,refresh,notice}){
  for(let i=1;i<=2;i++){$('sheet-user-'+i).addEventListener('input',()=>{linkDirty=true;render();});$('copy-formula-'+i).onclick=()=>copy(sheetFormula(i),`사용자 ${i} 탭의 A2에 붙여넣으세요.`);}
  window.addEventListener('pagehide',()=>{wipe();progress.reset();});
  mount();render();
- return {render,observe,maySave,settingsChanged:()=>progress.settingsChanged(),active:()=>active,expectedSheet:()=>active?progress.sheet:'',linksSaved:()=>{linkDirty=false;render();},startTest:()=>{progress.startTest();testAt=Date.now();timeout=false;},testFailed:()=>{progress.testPending=false;timeout=true;render();},event:e=>{progress.event(e);render();},configured:()=>{progress.test='';progress.testPending=false;progress.registration='saved';copied='';$('existing-devices').value='';$('registration-confirmed').checked=false;$('keep-token').checked=true;$('token').type='password';$('toggle-token').textContent='토큰 보기';$('toggle-token').setAttribute('aria-pressed','false');},clear:wipe};
+ return {openBoard:()=>{mode(true);show(2);},render,observe,maySave,settingsChanged:()=>progress.settingsChanged(),active:()=>active,expectedSheet:()=>active?progress.sheet:'',linksSaved:()=>{linkDirty=false;render();},startTest:()=>{progress.startTest();testAt=Date.now();timeout=false;},testFailed:()=>{progress.testPending=false;timeout=true;render();},event:e=>{progress.event(e);render();},configured:()=>{progress.test='';progress.testPending=false;progress.registration='saved';copied='';$('existing-devices').value='';$('registration-confirmed').checked=false;$('keep-token').checked=true;$('token').type='password';$('toggle-token').textContent='토큰 보기';$('toggle-token').setAttribute('aria-pressed','false');},clear:wipe};
 }

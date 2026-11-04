@@ -1,12 +1,13 @@
-import {SerialClient,Connection,settings,preserved,event,eventText} from './serial.mjs?v=0.6.0';
-import {collectRecords,csvBytes,xlsxBytes,fileName} from './record-export.mjs?v=0.6.0';
-import {createWizard} from './wizard.mjs?v=0.6.0';
-import {userSheetUrls,linksPreserved} from './setup.mjs?v=0.6.0';
-import {release} from './firmware-catalog.mjs?v=0.6.0';
-import {compatible,compareVersion} from './firmware-policy.mjs?v=0.6.0';
-import {FirmwareUpdate} from './firmware-update.mjs?v=0.6.0';
+import {SerialClient,Connection,settings,preserved,event,eventText} from './serial.mjs?v=0.7.0';
+import {collectRecords,csvBytes,xlsxBytes,fileName} from './record-export.mjs?v=0.7.0';
+import {createWizard} from './wizard.mjs?v=0.7.0';
+import {userSheetUrls,linksPreserved} from './setup.mjs?v=0.7.0';
+import {release} from './firmware-catalog.mjs?v=0.7.0';
+import {compatible,compareVersion} from './firmware-policy.mjs?v=0.7.0';
+import {FirmwareUpdate} from './firmware-update.mjs?v=0.7.0';
+import {InitialInstall} from './initial-install.mjs?v=0.7.0';
 const $=id=>document.getElementById(id);
-let board=null,connected=false,busy=false,dirty=false,polling=false,connection,wizard,updater;
+let board=null,connected=false,busy=false,dirty=false,polling=false,connection,wizard,updater,installer;
 const seen=new Set();
 const messages={invalid_ssid:'Wi-Fi 이름은 1~32바이트로 입력하세요.',invalid_password:'Wi-Fi 비밀번호는 8~63바이트로 입력하세요.',invalid_token:'Google에 등록한 64자리 소문자 토큰을 입력하세요.',invalid_endpoint:'Google Apps Script의 HTTPS /exec 주소를 입력하세요.',usb_timeout:'보드 응답을 확인하지 못했습니다. 설정 저장 결과는 재연결 후 확인하세요.',usb_disconnected:'USB 연결이 끊겼습니다. 보드를 다시 선택해 주세요.',unsupported_board:'이 설정 화면에서 지원하는 보드가 아닙니다.',invalid_usb_reply:'보드 응답을 확인할 수 없습니다. 다른 USB 장치를 선택했는지 확인하세요.',session_changed:'보드가 재시작했습니다. 다시 연결해 주세요.',busy:'보드 작업이 끝난 뒤 다시 시도하세요.',device_busy_timeout:'혈압계 통신이 끝난 뒤 보드를 다시 연결해 주세요.',preservation_failed:'저장 후 기존 기록·설정 확인이 필요합니다. 초기화하지 마세요.',invalid_configuration:'입력값을 확인하세요.',queue_not_ready:'보드 기록 저장소 확인이 필요합니다. 초기화하지 마세요.'};
 Object.assign(messages,{export_update_required:'기록 내보내기는 S3 hem-0.7.0 이상에서 지원합니다. 펌웨어를 먼저 업데이트하세요.',invalid_export_reply:'기록 응답을 끝까지 확인하지 못해 파일을 만들지 않았습니다.',snapshot_changed:'읽는 동안 기록이나 전송 상태가 바뀌었습니다. 잠시 후 다시 저장해 주세요.',export_session_changed:'보드가 재시작하거나 바뀌었습니다. 다시 연결해 주세요.'});
@@ -15,21 +16,23 @@ Object.assign(messages,{firmware_manifest:'배포 정보가 올바르지 않습�
 function notice(text,error=false){$('notice').textContent=text;$('notice').classList.toggle('error',error);}
 function error(e){notice(e.name==='NotFoundError'?'USB 장치 선택을 취소했습니다.':e.name==='SecurityError'||e.name==='NotAllowedError'?'USB 권한을 허용하고 데스크톱 Chrome·Edge의 새 탭에서 다시 열어주세요.':messages[e.message]||'요청을 완료하지 못했습니다. USB 연결과 입력값을 확인해 주세요.',true);}
 function controls(){
- for(const id of ['export-user','export-csv','export-xlsx'])$(id).disabled=busy||!connected||!board?.queueReady||board?.recordsExportVersion!==1;
+ const locked=busy||!!installer?.active;
+ for(const id of ['export-user','export-csv','export-xlsx'])$(id).disabled=locked||!connected||!board?.queueReady||board?.recordsExportVersion!==1;
  $('export-help').textContent=!connected?'USB 보드를 연결하면 기록을 파일로 저장할 수 있습니다.':board.recordsExportVersion!==1?'기록 내보내기는 S3 hem-0.7.0 이상에서 지원합니다. 아래에서 펌웨어를 업데이트하세요.':'보드에 남아 있는 최근 최대 128건입니다. 내려받아도 보드 기록과 전송 대기 상태는 그대로입니다.';
- $('connect').disabled=busy||connected||!supported;$('disconnect').disabled=busy||!connection?.enabled;
- $('fields').disabled=busy||!connected||!board?.queueReady;
- $('test').disabled=busy||!connected||!board?.configured||dirty;
- $('history').disabled=busy||!connected||!Number.isInteger(board?.logNewestSeq);
- meterControls();firmwareControls();wizard?.render();
+ $('connect').disabled=locked||connected||!supported;$('disconnect').disabled=locked||!connection?.enabled;
+ $('fields').disabled=locked||!connected||!board?.queueReady;
+ $('test').disabled=locked||!connected||!board?.configured||dirty;
+ $('history').disabled=locked||!connected||!Number.isInteger(board?.logNewestSeq);
+ meterControls();firmwareControls();initialControls();wizard?.render();
 }
 function firmwareControls(){
+ const locked=busy||!!installer?.active;
  $('firmware-current').textContent=connected?board.firmwareVersion:'USB 연결 후 표시';$('firmware-latest').textContent=release.version;
  const supported=connected&&compatible(board,release),comparison=supported?compareVersion(board.firmwareVersion,release.version):null;
  $('firmware-reinstall-row').hidden=comparison!==0;
- $('firmware-reinstall').disabled=busy||!supported;
- $('firmware-start').disabled=busy||!supported||dirty||!board.queueReady||comparison>0||comparison===0&&!$('firmware-reinstall').checked||!!updater?.recoverable;
- $('firmware-retry').hidden=!updater?.recoverable;$('firmware-retry').disabled=busy;
+ $('firmware-reinstall').disabled=locked||!supported;
+ $('firmware-start').disabled=locked||!supported||dirty||!board.queueReady||comparison>0||comparison===0&&!$('firmware-reinstall').checked||!!updater?.recoverable;
+ $('firmware-retry').hidden=!updater?.recoverable;$('firmware-retry').disabled=locked;
  $('firmware-retry').textContent=updater?.verified?'USB 다시 선택 · 보존 확인':'USB 다시 선택 · 업데이트 재시도';
  $('firmware-help').textContent=!connected?'USB 보드를 연결하면 현재 버전과 최신 버전을 비교합니다.':!supported?'웹 업데이트는 Waveshare S3 LCD 1.54 비터치 보드용입니다. 기존 C3 설정 기능은 그대로 사용할 수 있습니다.':dirty?'입력 중인 Wi-Fi·토큰 설정을 먼저 저장하거나 지워주세요.':comparison>0?'현재 보드가 배포본보다 새롭습니다. 이전 버전으로 내리지 않습니다.':comparison===0?'최신 버전입니다. 필요한 경우 같은 버전을 다시 설치할 수 있습니다.':'새 버전이 있습니다. 기존 기록·설정·혈압계 연결 키를 보존하며 업데이트합니다.';
 }
@@ -52,9 +55,10 @@ function addEvent(e){
 const client=new SerialClient({onEvent:e=>{addEvent(e);if(connected)wizard?.event(e);},onDisconnect:()=>{connected=false;$('badge').textContent=connection?.enabled?'USB 재연결 중':'USB 연결 해제';$('badge').classList.remove('online');$('usb').textContent='마지막 확인 정보';controls();}});
 connection=new Connection(client,{getPorts:()=>navigator.serial.getPorts()});
 updater=new FirmwareUpdate({connection,client,getPorts:()=>navigator.serial.getPorts(),progress:(stage,percent)=>{$('firmware-progress').hidden=false;$('firmware-progress').value=percent;$('firmware-status').textContent=stage+(stage==='업데이트 중'?` · ${percent}%`:'');}});
+installer=new InitialInstall({connection,getPorts:()=>navigator.serial.getPorts(),progress:(stage,percent)=>{$('initial-progress').hidden=false;$('initial-progress').value=percent;$('initial-status').textContent=stage+(stage==='처음 설치 중'?` · ${percent}%`:'');}});
 const supported=isSecureContext&&'serial'in navigator;$('unsupported').hidden=supported;
-async function work(run){if(busy)return;busy=true;controls();try{while(polling)await new Promise(r=>setTimeout(r,20));await run();}catch(e){error(e);}finally{busy=false;controls();}}
-wizard=createWizard({getState:()=>({board,connected,busy,dirty}),tokenChanged:()=>{dirty=true;controls();},test:()=>runTest(),refresh:()=>work(async()=>{state(await connection.read('info'));notice('보드의 현재 등록 상태와 저장 정보를 다시 읽었습니다.');}),notice});
+async function work(run){if(busy||installer?.active)return;busy=true;controls();try{while(polling)await new Promise(r=>setTimeout(r,20));await run();}catch(e){error(e);}finally{busy=false;controls();}}
+wizard=createWizard({getState:()=>({board,connected,busy:busy||!!installer?.active,dirty}),tokenChanged:()=>{dirty=true;controls();},test:()=>runTest(),refresh:()=>work(async()=>{state(await connection.read('info'));notice('보드의 현재 등록 상태와 저장 정보를 다시 읽었습니다.');}),notice});
 controls();
 $('firmware-reinstall').onchange=firmwareControls;
 async function updateFirmware(retry=false){return work(async()=>{
@@ -71,7 +75,7 @@ async function updateFirmware(retry=false){return work(async()=>{
  }
 });}
 $('firmware-start').onclick=()=>updateFirmware();$('firmware-retry').onclick=()=>updateFirmware(true);
-window.addEventListener('beforeunload',e=>{if(updater?.recoverable){e.preventDefault();e.returnValue='';}});
+window.addEventListener('beforeunload',e=>{if(updater?.recoverable||installer?.active){e.preventDefault();e.returnValue='';}});
 $('connect').onclick=()=>work(async()=>{
  const port=await navigator.serial.requestPort({filters:[{usbVendorId:0x303a},{usbVendorId:0x1a86},{usbVendorId:0x10c4},{usbVendorId:0x0403}]});
  notice('보드 버전과 기록 보관 상태를 확인하고 있습니다…');const d=await connection.attach(port);board=d;connected=true;dirty=false;seen.clear();$('events').replaceChildren();
@@ -119,7 +123,7 @@ for(const format of ['csv','xlsx'])$('export-'+format).onclick=()=>work(async()=
  }
 });
 setInterval(async()=>{
- if(!connection.enabled||!board||busy||polling)return;polling=true;
+ if(!connection.enabled||!board||busy||installer?.active||polling)return;polling=true;
  const wasConnected=connected,recoveries=connection.recoveries;
  try{const d=await connection.read('info');connected=true;$('badge').textContent='USB 연결됨';$('badge').classList.add('online');$('usb').textContent='연결됨';state(d);if(!wasConnected||connection.recoveries!==recoveries){await recentHistory();notice('같은 보드에 다시 연결해 상태와 최근 로그를 확인했습니다.');}}
  catch(e){connected=false;$('badge').classList.remove('online');$('usb').textContent='마지막 확인 정보';
@@ -131,7 +135,8 @@ window.addEventListener('pagehide',()=>{$('password').value='';$('token').value=
 
 var audioDirty=false,modelDraft=false;
 function meterControls(){
- const b=board,enabled=connected&&b?.meterModelSwitchSupported===true&&!busy&&!dirty;
+ const locked=busy||!!installer?.active;
+ const b=board,enabled=connected&&b?.meterModelSwitchSupported===true&&!locked&&!dirty;
  for(const id of ['meter-model','meter-confirm'])$(id).disabled=!enabled;
  if(!modelDraft&&document.activeElement!==$('meter-model')&&!$('meter-confirm').checked)$('meter-model').value=b?.meterModel||'omron-hem7155t';
  $('apply-model').disabled=!enabled||!$('meter-confirm').checked||b.pending!==0||$('meter-model').value===b.meterModel;
@@ -143,7 +148,7 @@ function meterControls(){
  if(targets.some(t=>t.address===previous))select.value=previous;else if(b?.targetAddress)select.value=b.targetAddress;
  select.disabled=!enabled;$('target-confirm').disabled=!enabled;
  $('apply-target').disabled=!enabled||!micro||!select.value||!$('target-confirm').checked||b.pending!==0||(b.remembered>0&&select.value!==b.targetAddress);
- for(const id of ['audio-volume','save-audio','test-audio'])$(id).disabled=busy||!connected||!b?.audioSupported;
+ for(const id of ['audio-volume','save-audio','test-audio'])$(id).disabled=locked||!connected||!b?.audioSupported;
  if(!audioDirty&&b?.audioSupported)$('audio-volume').value=String(b.audioVolume);
  $('audio-help').textContent=b?.audioSupported&&!b.audioReady?'스피커 초기화를 확인하지 못했습니다. 기록 수신·전송은 계속됩니다.':'BLE 연결 시 짧은 비프, 시트 저장과 보드의 확인 보관이 끝나면 두 음의 차임입니다. 시험 버튼은 기록을 전송하지 않습니다.';
 }
@@ -164,3 +169,34 @@ for(const [id,test] of [['save-audio',false],['test-audio',true]])$(id).onclick=
  const before=await connection.read('info');const after=await client.request('audio',before,{volume:Number($('audio-volume').value),test});
  if(!preserved(before,after))throw Error('preservation_failed');audioDirty=false;state(after);notice(test?'음량을 저장하고 비프·차임 시험을 요청했습니다.':'알림 음량을 저장했습니다.');
 });
+
+const initialMessages={initial_confirmation:'보드 모델과 새 보드 확인란을 먼저 확인하세요.',initial_disconnect_first:'현재 웹 USB 연결을 해제한 뒤 새 보드만 연결하세요.',initial_existing_installation:'기존 BP to Sheets가 감지됐습니다. 처음 설치하지 않았습니다. USB 보드 선택으로 연결한 뒤 업데이트를 이용하세요.',initial_has_data:'설정·기록 영역이 비어 있지 않습니다. 보존을 위해 설치하지 않았습니다. 출고 데모 보드도 이 경우 강제로 지우지 않습니다.',initial_not_fresh:'설치 후 새 보드 상태 확인이 필요합니다. 초기화하거나 다시 기록하지 마세요.',initial_recovery_required:'이 페이지를 유지하고 같은 USB 보드를 다시 선택하세요.'};
+function initialControls(){
+ if(!installer)return;
+ const ready=installer.stage==='ready',locked=busy||installer.active;
+ for(const id of ['initial-model','initial-empty'])$(id).disabled=locked;
+ $('initial-inspect').disabled=busy||connected||connection?.enabled||dirty||installer.active||updater?.recoverable||!supported||!$('initial-model').checked||!$('initial-empty').checked;
+ $('initial-ready').hidden=!ready;$('initial-start').disabled=busy||!ready||!$('initial-confirm').checked;$('initial-confirm').disabled=busy||!ready;
+ $('initial-cancel').hidden=!ready;$('initial-cancel').disabled=busy;
+ $('initial-retry').hidden=!installer.recoverable;$('initial-retry').disabled=busy;
+ $('initial-setup').hidden=installer.stage!=='complete';$('initial-setup').disabled=busy;
+ $('initial-version').textContent=release.version;$('initial-board').textContent=installer.before?.bridgeId||'—';
+ $('initial-help').textContent=connected||connection?.enabled?'현재 USB 연결을 해제한 뒤, 사용 중인 보드는 분리하고 새 보드만 연결하세요.':dirty?'입력 중인 설정을 먼저 저장하거나 지워주세요.':installer.stage==='ready'?'선택한 보드 ID를 확인하고 아래 설치 확인란을 선택하세요. 아직 기록하지 않았습니다.':'새 보드만 연결하세요. 확인 단계에서는 플래시에 기록하지 않습니다.';
+}
+async function initialWork(run){
+ if(busy)return;busy=true;controls();
+ try{while(polling)await new Promise(r=>setTimeout(r,20));$('initial-status').classList.remove('error');await run();}
+ catch(e){const text=initialMessages[e.message]||messages[e.message]||'처음 설치 확인이 중단됐습니다. 페이지를 유지하고 USB 연결을 확인하세요.';$('initial-status').textContent=text;$('initial-status').classList.add('error');notice(e.name==='NotFoundError'?'USB 장치 선택을 취소했습니다.':text,true);}
+ finally{busy=false;controls();}
+}
+async function initialPort(){return navigator.serial.requestPort({filters:[{usbVendorId:0x303a},{usbVendorId:0x1a86},{usbVendorId:0x10c4},{usbVendorId:0x0403}]});}
+function initialComplete(d){connected=true;dirty=false;seen.clear();$('events').replaceChildren();state(d);$('badge').textContent='USB 연결됨';$('badge').classList.add('online');$('usb').textContent='연결됨';notice('새 보드의 첫 설치와 빈 기록·미설정 상태를 확인했습니다. 설정 마법사에서 시트·Wi-Fi·혈압계를 연결하세요.');}
+for(const id of ['initial-model','initial-empty','initial-confirm'])$(id).onchange=initialControls;
+$('initial-inspect').onclick=()=>initialWork(async()=>{const port=await initialPort();$('initial-confirm').checked=false;await installer.inspect(port,{confirmed:$('initial-empty').checked,model:$('initial-model').checked});});
+$('initial-start').onclick=()=>initialWork(async()=>initialComplete(await installer.install({confirmed:$('initial-confirm').checked})));
+$('initial-cancel').onclick=()=>initialWork(()=>installer.cancel());
+$('initial-retry').onclick=()=>initialWork(async()=>initialComplete(await installer.retry(await initialPort())));
+$('initial-setup').onclick=()=>{wizard.openBoard();$('wizard').scrollIntoView({block:'start'});};
+for(const a of document.querySelectorAll('.initial-link'))a.addEventListener('click',()=>{$('initial-panel').open=true;});
+
+if(location.hash==='#initial-card')$('initial-panel').open=true;
