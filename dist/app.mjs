@@ -1,11 +1,11 @@
-import {SerialClient,Connection,settings,preserved,event,eventText} from './serial.mjs?v=0.7.1';
-import {collectRecords,csvBytes,xlsxBytes,fileName} from './record-export.mjs?v=0.7.1';
-import {createWizard} from './wizard.mjs?v=0.7.1';
-import {userSheetUrls,linksPreserved} from './setup.mjs?v=0.7.1';
-import {release} from './firmware-catalog.mjs?v=0.7.1';
-import {compatible,compareVersion} from './firmware-policy.mjs?v=0.7.1';
-import {FirmwareUpdate} from './firmware-update.mjs?v=0.7.1';
-import {InitialInstall} from './initial-install.mjs?v=0.7.1';
+import {SerialClient,Connection,settings,preserved,event,eventText} from './serial.mjs?v=0.7.2';
+import {collectRecords,csvBytes,xlsxBytes,fileName} from './record-export.mjs?v=0.7.2';
+import {createWizard} from './wizard.mjs?v=0.7.2';
+import {userSheetUrls,linksPreserved} from './setup.mjs?v=0.7.2';
+import {release} from './firmware-catalog.mjs?v=0.7.2';
+import {compatible,compareVersion} from './firmware-policy.mjs?v=0.7.2';
+import {FirmwareUpdate} from './firmware-update.mjs?v=0.7.2';
+import {InitialInstall} from './initial-install.mjs?v=0.7.2';
 const $=id=>document.getElementById(id);
 let board=null,connected=false,busy=false,dirty=false,polling=false,connection,wizard,updater,installer;
 const seen=new Set();
@@ -55,7 +55,7 @@ function addEvent(e){
 const client=new SerialClient({onEvent:e=>{addEvent(e);if(connected)wizard?.event(e);},onDisconnect:()=>{connected=false;$('badge').textContent=connection?.enabled?'USB 재연결 중':'USB 연결 해제';$('badge').classList.remove('online');$('usb').textContent='마지막 확인 정보';controls();}});
 connection=new Connection(client,{getPorts:()=>navigator.serial.getPorts()});
 updater=new FirmwareUpdate({connection,client,getPorts:()=>navigator.serial.getPorts(),progress:(stage,percent)=>{$('firmware-progress').hidden=false;$('firmware-progress').value=percent;$('firmware-status').textContent=stage+(stage==='업데이트 중'?` · ${percent}%`:'');}});
-installer=new InitialInstall({connection,getPorts:()=>navigator.serial.getPorts(),progress:(stage,percent)=>{$('initial-progress').hidden=false;$('initial-progress').value=percent;$('initial-status').textContent=stage+(stage==='처음 설치 중'?` · ${percent}%`:'');}});
+installer=new InitialInstall({connection,getPorts:()=>navigator.serial.getPorts(),progress:(stage,percent)=>{$('initial-progress').hidden=false;$('initial-progress').value=percent;$('initial-status').textContent=stage+(stage==='처음 설치 중'?` · ${percent}%`:'');initialControls();}});
 const supported=isSecureContext&&'serial'in navigator;$('unsupported').hidden=supported;
 async function work(run){if(busy||installer?.active)return;busy=true;controls();try{while(polling)await new Promise(r=>setTimeout(r,20));await run();}catch(e){error(e);}finally{busy=false;controls();}}
 wizard=createWizard({getState:()=>({board,connected,busy:busy||!!installer?.active,dirty}),tokenChanged:()=>{dirty=true;controls();},test:()=>runTest(),refresh:()=>work(async()=>{state(await connection.read('info'));notice('보드의 현재 등록 상태와 저장 정보를 다시 읽었습니다.');}),notice});
@@ -178,12 +178,13 @@ function initialControls(){
  $('initial-inspect').disabled=busy||connected||connection?.enabled||dirty||installer.active||updater?.recoverable||!supported||!$('initial-model').checked||!$('initial-empty').checked;
  $('initial-ready').hidden=!ready;$('initial-start').disabled=busy||!ready||!$('initial-confirm').checked;$('initial-confirm').disabled=busy||!ready;
  $('initial-cancel').hidden=!ready;$('initial-cancel').disabled=busy;
- $('initial-retry').hidden=!installer.recoverable;$('initial-retry').disabled=busy;
+ $('initial-retry').hidden=busy||!installer.recoverable;$('initial-retry').disabled=busy;
  $('initial-setup').hidden=installer.stage!=='complete';$('initial-setup').disabled=busy;
  $('initial-inspection').hidden=!installer.inspection;
  if(installer.inspection){$('initial-inspection-board').textContent=installer.inspection.bridgeId;$('initial-inspection-settings').textContent=installer.inspection.settingsEmpty?'비어 있음':'비어 있지 않음 · 초기화하지 않음';$('initial-inspection-log').textContent=installer.inspection.logEmpty?'비어 있음':'비어 있지 않음 · 초기화하지 않음';}
  $('initial-version').textContent=release.version;$('initial-board').textContent=installer.before?.bridgeId||'—';
- $('initial-help').textContent=connected||connection?.enabled?'현재 USB 연결을 해제한 뒤, 사용 중인 보드는 분리하고 새 보드만 연결하세요.':dirty?'입력 중인 설정을 먼저 저장하거나 지워주세요.':installer.stage==='ready'?'선택한 보드 ID를 확인하고 아래 설치 확인란을 선택하세요. 아직 기록하지 않았습니다.':'새 보드만 연결하세요. 확인 단계에서는 플래시에 기록하지 않습니다.';
+ const phaseHelp={checking:'설치 파일과 새 보드를 검사하고 있습니다. 아직 기록하지 않았습니다.',ready:'선택한 보드 ID를 확인하고 아래 설치 확인란을 선택하세요. 아직 기록하지 않았습니다.',writing:'새 보드에 설치하고 있습니다. USB 케이블과 이 페이지를 유지하세요.',reconnecting:'설치 파일 기록이 끝났습니다. 재시작한 보드의 버전과 초기 상태를 확인합니다.',interrupted:'설치 확인이 중단됐습니다. 이 페이지를 유지하고 안내를 확인하세요.',complete:'새 보드의 설치와 초기 상태를 확인했습니다. 설정 마법사로 계속하세요.'};
+ $('initial-help').textContent=phaseHelp[installer.stage]||(connected||connection?.enabled?'현재 USB 연결을 해제한 뒤, 사용 중인 보드는 분리하고 새 보드만 연결하세요.':dirty?'입력 중인 설정을 먼저 저장하거나 지워주세요.':'새 보드만 연결하세요. 확인 단계에서는 플래시에 기록하지 않습니다.');
 }
 async function initialWork(run){
  if(busy)return;busy=true;controls();

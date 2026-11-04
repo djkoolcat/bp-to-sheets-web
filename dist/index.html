@@ -2,7 +2,7 @@
 <html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'none'; img-src 'self' data:; object-src 'none'; base-uri 'none'; form-action 'none'">
 <meta name="referrer" content="no-referrer"><meta name="description" content="앱 설치 없이 USB로 BP to Sheets 보드의 Wi-Fi와 Google 연결을 설정하세요.">
-<title>BP to Sheets · 첫 설정과 USB 관리</title><link rel="stylesheet" href="style.css?v=0.7.1"></head>
+<title>BP to Sheets · 첫 설정과 USB 관리</title><link rel="stylesheet" href="style.css?v=0.7.2"></head>
 <body><header><div class="brand"><span class="brand-mark" aria-hidden="true">bp</span><span>BP TO SHEETS</span></div><span id="badge" class="badge">USB 연결 전</span></header>
 <main><section class="intro"><p class="eyebrow">내 기록은 내 Google 시트에</p><h1>처음 연결부터, 차근차근.</h1><p>시트 준비부터 혈압계 연결까지 한 단계씩 안내합니다. Windows·Mac의 Chrome·Edge와 데이터 USB 케이블을 준비하세요.</p></section>
 <nav class="mode-switch" aria-label="설정 방식"><button id="mode-wizard" aria-pressed="true">처음 설정 안내</button><button id="mode-manage" aria-pressed="false">설정·기록 관리</button></nav>
@@ -72,13 +72,13 @@
 <progress id="firmware-progress" max="100" value="0" hidden aria-label="펌웨어 업데이트 진행"></progress><p id="firmware-status" class="small" role="status" aria-live="polite">업데이트하는 동안 USB 케이블과 이 페이지를 유지하세요. 완료 후 기록·설정 보존을 확인합니다.</p>
 <details><summary>연결이 끊기거나 업데이트가 멈췄나요?</summary><p>전체 초기화나 기록 삭제를 하지 마세요. 이 페이지를 유지한 채 USB 케이블을 확인하고 ‘USB 다시 선택’을 누르세요. 파일 기록이 끝났으면 확인만 이어가며, 중단됐다면 같은 보드의 앱만 다시 기록합니다.</p></details></section>
 <section class="card initial-card" id="initial-card" aria-labelledby="initial-title"><details id="initial-panel"><summary id="initial-title">새 보드 최초 설치</summary>
-<p class="small">새 보드 시험 기능 · 실제 최초 설치·부팅 검증은 대기 중입니다.</p><p class="lead">처음 사용하는 Waveshare S3 LCD 1.54 비터치 보드 전용입니다. 이미 사용 중인 보드는 위의 ‘펌웨어 업데이트’를 이용하세요.</p>
+<p class="small">새 보드 시험 기능 · Mac USB 첫 설치·재연결 확인 · Windows 실기기 시험 대기</p><p class="lead">처음 사용하는 Waveshare S3 LCD 1.54 비터치 보드 전용입니다. 이미 사용 중인 보드는 위의 ‘펌웨어 업데이트’를 이용하세요.</p>
 <p>출고 데모 프로그램이 있다면 교체됩니다. 기존 BP to Sheets 또는 비어 있지 않은 설정·기록 영역이 감지되면 설치하지 않습니다. 전체 초기화는 제공하지 않습니다.</p>
 <label class="check"><input id="initial-model" type="checkbox"><span>제품이 Waveshare ESP32-S3-LCD-1.54 <strong>비터치·16MB</strong> 모델인 것을 확인했습니다.</span></label>
 <label class="check"><input id="initial-empty" type="checkbox"><span>보존할 기록·설정이 없는 새 보드이며, 출고 데모를 교체해도 됩니다. 사용 중인 보드는 분리했습니다.</span></label>
 <button id="initial-inspect" class="quiet" disabled>새 USB 보드 선택 · 설치 가능 확인</button>
 <p id="initial-help" class="small">현재 웹 USB 연결을 해제하고 새 보드만 연결하세요. 확인 단계에서는 플래시에 기록하지 않습니다.</p>
-<div id="initial-inspection" class="initial-ready" hidden><h3>선택한 보드 검사 결과</h3><dl><dt>보드 ID</dt><dd id="initial-inspection-board">—</dd><dt>설정 영역</dt><dd id="initial-inspection-settings">—</dd><dt>동작 로그 영역</dt><dd id="initial-inspection-log">—</dd></dl><p class="small">영역이 비었는지만 보드 내부 해시로 확인합니다. 비밀번호·인증 키·측정값은 읽거나 복사하지 않습니다.</p></div>
+<div id="initial-inspection" class="initial-ready" hidden><h3>설치 전 보드 검사 결과</h3><dl><dt>보드 ID</dt><dd id="initial-inspection-board">—</dd><dt>설정 영역</dt><dd id="initial-inspection-settings">—</dd><dt>동작 로그 영역</dt><dd id="initial-inspection-log">—</dd></dl><p class="small">영역이 비었는지만 보드 내부 해시로 확인합니다. 비밀번호·인증 키·측정값은 읽거나 복사하지 않습니다.</p></div>
 <div id="initial-ready" class="initial-ready" hidden><h3>선택한 새 보드</h3><dl><dt>보드 ID</dt><dd id="initial-board">—</dd><dt>검사 결과</dt><dd>ESP32-S3 · 16MB · 설정·기록 영역 비어 있음</dd><dt>설치 버전</dt><dd id="initial-version">—</dd></dl>
 <label class="check"><input id="initial-confirm" type="checkbox"><span>위 ID의 새 보드에 BP to Sheets를 처음 설치합니다.</span></label><button id="initial-start" class="primary" disabled>확인한 새 보드에 처음 설치</button></div>
 <div class="button-row"><button id="initial-cancel" class="quiet" hidden>설치 취소 · 보드 재시작</button><button id="initial-retry" class="quiet" hidden>같은 USB 보드 다시 선택 · 설치 확인</button><button id="initial-setup" class="primary" hidden>설정 마법사로 계속</button></div>
@@ -92,4 +92,4 @@
 <label for="audio-volume">알림 소리</label><select id="audio-volume"><option value="0">음소거</option><option value="25" selected>작게 · 기본</option><option value="40">보통</option><option value="60">크게</option></select><div class="button-row"><button id="save-audio" class="quiet">음량 저장</button><button id="test-audio" class="quiet">저장하고 소리 시험</button></div><p id="audio-help" class="small">BLE 연결 시 짧은 비프, Google 저장 확인 후 두 음의 차임입니다. 소리 시험은 기록을 전송하지 않습니다.</p></section>
 <section class="card export-card"><div class="section-title"><h2>기록 파일로 저장</h2><span class="small">이 PC에 다운로드</span></div><p id="export-help">USB 보드를 연결하면 기록을 파일로 저장할 수 있습니다.</p><div class="export-actions"><label for="export-user">저장할 사용자</label><select id="export-user" disabled><option value="0">두 사용자 전체</option><option value="1">사용자 1</option><option value="2">사용자 2</option></select><button id="export-csv" class="quiet" disabled>CSV 저장</button><button id="export-xlsx" class="primary" disabled>엑셀 저장</button></div><p id="export-status" class="small" role="status" aria-live="polite">엑셀 전체 저장은 사용자 1·사용자 2·전체 기록 탭으로 구성합니다.</p><p class="small">측정값·측정 일시·사용자·recordId·보드 전송 상태를 저장합니다. 수신 일시는 보드에 별도로 보관하지 않아 빈칸입니다. 비밀번호·토큰·혈압계 인증 키는 파일에 넣지 않습니다.</p></section>
 <section class="card logs"><div class="section-title"><h2>최근 동작</h2><button id="history" class="quiet" disabled>보드 로그 읽기</button></div><p class="small">연결 중 새 동작을 표시합니다. 측정값·비밀번호·토큰은 로그에 표시하지 않습니다.</p><ol id="events" aria-label="최근 동작 로그"><li class="empty">보드를 연결하면 동작이 여기에 표시됩니다.</li></ol></section>
-</main><footer>BP to Sheets · USB 웹 설정 0.7.1 · 서버에 설정·측정값을 보내지 않는 USB 도구</footer><script type="module" src="app.mjs?v=0.7.1"></script></body></html>
+</main><footer>BP to Sheets · USB 웹 설정 0.7.2 · 서버에 설정·측정값을 보내지 않는 USB 도구</footer><script type="module" src="app.mjs?v=0.7.2"></script></body></html>

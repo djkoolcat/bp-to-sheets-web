@@ -25,8 +25,8 @@ assert(html.includes("form-action 'none'"), 'Credentials must not be submitted t
 assert(!/\son\w+\s*=/i.test(html), 'Inline event handlers are not allowed');
 const scripts = [...html.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script>/gi)];
 assert.equal(scripts.length, 1, 'Use only the local application script');
-assert(/\bsrc="app\.mjs\?v=0\.7\.1"/.test(scripts[0][1]) && !scripts[0][2].trim(), 'Remote or inline script');
-assert(/href="style\.css\?v=0\.7\.1"/.test(html), 'Use the local stylesheet');
+assert(/\bsrc="app\.mjs\?v=0\.7\.2"/.test(scripts[0][1]) && !scripts[0][2].trim(), 'Remote or inline script');
+assert(/href="style\.css\?v=0\.7\.2"/.test(html), 'Use the local stylesheet');
 assert(!/<(?:script|link|img)\b[^>]*(?:src|href)=["'](?:\/|https?:|\/\/)/i.test(html), 'Assets must work below the GitHub project path');
 const external = new Set(['https://sheets.google.com/create','https://script.google.com/home','https://developers.google.com/apps-script/guides/web']);
 for(const match of html.matchAll(/<a\b[^>]*href="(https?:[^\"]+)"[^>]*>/g)){

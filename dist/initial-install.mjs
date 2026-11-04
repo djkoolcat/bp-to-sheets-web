@@ -1,7 +1,7 @@
-import {release} from './firmware-catalog.mjs?v=0.7.1';
-import {initialImages,loadInitialImages} from './initial-catalog.mjs?v=0.7.1';
-import {hex,compatible,verifyPartitions} from './firmware-policy.mjs?v=0.7.1';
-import {createFlasher} from './flash-adapter.mjs?v=0.7.1';
+import {release} from './firmware-catalog.mjs?v=0.7.2';
+import {initialImages,loadInitialImages} from './initial-catalog.mjs?v=0.7.2';
+import {hex,compatible,verifyPartitions} from './firmware-policy.mjs?v=0.7.2';
+import {createFlasher} from './flash-adapter.mjs?v=0.7.2';
 import {md5} from './flasher/esptool.mjs';
 const fail=code=>{throw Error(code);};
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));

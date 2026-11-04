@@ -1,4 +1,4 @@
-import {sheetUrl,userSheetUrls} from './setup.mjs?v=0.7.1';
+import {sheetUrl,userSheetUrls} from './setup.mjs?v=0.7.2';
 const encoder=new TextEncoder();
 const wait=ms=>new Promise(r=>setTimeout(r,ms));
 const fail=code=>{throw Error(code);};
