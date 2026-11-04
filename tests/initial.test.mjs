@@ -64,3 +64,8 @@ test('Storage appearing after review blocks writing; a post-write integrity fail
  const changed=harness({hashes:n=>n===1?blankProtectedHashes:['changed','changed']});await changed.install.inspect(changed.port,confirmed);await assert.rejects(changed.install.install({confirmed:true}),/initial_has_data/);assert(!changed.calls.includes('write'));
  const corrupt=harness({hashes:n=>n<3?blankProtectedHashes:['changed','changed']});await corrupt.install.inspect(corrupt.port,confirmed);await assert.rejects(corrupt.install.install({confirmed:true}),/preservation_failed/);assert(corrupt.install.fatal);await assert.rejects(corrupt.install.retry(corrupt.port),/initial_recovery_required/);assert.equal(corrupt.calls.filter(c=>c==='write').length,1);
 });
+
+test('A blocked fresh-board check reports identity and blank flags only, never hashes or storage bytes',async()=>{
+ const h=harness({hashes:['nonempty',blankProtectedHashes[1]]});await assert.rejects(h.install.inspect(h.port,confirmed),/initial_has_data/);
+ assert.deepEqual(h.install.inspection,{...chip,settingsEmpty:false,logEmpty:true});assert(!JSON.stringify(h.install.inspection).includes('nonempty'));assert(!h.calls.includes('write'));
+});

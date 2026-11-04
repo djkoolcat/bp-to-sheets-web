@@ -1,4 +1,4 @@
-import {hex,bridgeFromMac,verifyPartitions} from './firmware-policy.mjs?v=0.7.0';
+import {hex,bridgeFromMac,verifyPartitions} from './firmware-policy.mjs?v=0.7.1';
 // Native USB has a small receive buffer. Keep each stub read packet bounded
 // and acknowledge it before requesting the next; never read NVS or logs.
 export async function readPartitionTable(loader,transport,md5,{validate=true}={}){

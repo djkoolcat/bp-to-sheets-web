@@ -1,7 +1,7 @@
-import {release} from './firmware-catalog.mjs?v=0.7.0';
-import {initialImages,loadInitialImages} from './initial-catalog.mjs?v=0.7.0';
-import {hex,compatible,verifyPartitions} from './firmware-policy.mjs?v=0.7.0';
-import {createFlasher} from './flash-adapter.mjs?v=0.7.0';
+import {release} from './firmware-catalog.mjs?v=0.7.1';
+import {initialImages,loadInitialImages} from './initial-catalog.mjs?v=0.7.1';
+import {hex,compatible,verifyPartitions} from './firmware-policy.mjs?v=0.7.1';
+import {createFlasher} from './flash-adapter.mjs?v=0.7.1';
 import {md5} from './flasher/esptool.mjs';
 const fail=code=>{throw Error(code);};
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
@@ -31,7 +31,7 @@ export function verifyFreshBoard(after,bridgeId){
 }
 export class InitialInstall{
  constructor({connection,getPorts,makeFlasher=createFlasher,loadImages=loadInitialImages,progress=()=>{},wait=sleep,attempts=30}){
-  Object.assign(this,{connection,getPorts,makeFlasher,loadImages,progress,wait,attempts});this.stage='idle';this.before=null;this.started=false;this.verified=false;this.fatal=false;
+  Object.assign(this,{connection,getPorts,makeFlasher,loadImages,progress,wait,attempts});this.stage='idle';this.before=null;this.inspection=null;this.started=false;this.verified=false;this.fatal=false;
  }
  get active(){return !['idle','blocked','cancelled','complete'].includes(this.stage);}
  get recoverable(){return this.started&&!this.fatal&&this.stage!=='complete';}
@@ -40,11 +40,12 @@ export class InitialInstall{
  async inspect(port,{confirmed=false,model=false}={}){
   if(this.active||this.connection.enabled)fail('initial_disconnect_first');
   if(!confirmed||!model)fail('initial_confirmation');
-  this.stage='checking';this.started=false;this.verified=false;this.fatal=false;this.before=null;this.port=port;this.progress('설치 파일 확인',0);
+  this.stage='checking';this.started=false;this.verified=false;this.fatal=false;this.before=null;this.inspection=null;this.port=port;this.progress('설치 파일 확인',0);
   try{
    this.files=await verifiedInitialFiles(this.loadImages);this.flasher=await this.makeFlasher(port);
    this.progress('새 보드 확인',0);const chip=await this.flasher.connect();this.checkChip(chip);
-   const table=await this.flasher.partitionTable(),hashes=await this.flasher.protectedHashes();requireEmptyState(table,hashes);
+   const table=await this.flasher.partitionTable(),hashes=await this.flasher.protectedHashes();
+   this.inspection={...chip,settingsEmpty:hashes[0]===blankProtectedHashes[0],logEmpty:hashes[1]===blankProtectedHashes[1]};requireEmptyState(table,hashes);
    this.before=chip;this.stage='ready';this.progress('빈 설정·기록 영역 확인 · 설치 준비됨',0);return chip;
   }catch(e){try{await this.releaseLoader(true);}catch{}this.clearFiles();this.stage='blocked';throw e;}
  }
