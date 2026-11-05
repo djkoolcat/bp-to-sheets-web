@@ -1,7 +1,7 @@
-import {release} from './firmware-catalog.mjs?v=1.0.1';
-import {compatible,compareVersion} from './firmware-policy.mjs?v=1.0.1';
-import {blankProtectedHashes} from './initial-install.mjs?v=1.0.1';
-import {createFlasher} from './flash-adapter.mjs?v=1.0.1';
+import {release} from './firmware-catalog.mjs?v=1.0.2';
+import {compatible,compareVersion} from './firmware-policy.mjs?v=1.0.2';
+import {blankProtectedHashes} from './initial-install.mjs?v=1.0.2';
+import {createFlasher} from './flash-adapter.mjs?v=1.0.2';
 const fail=code=>{throw Error(code);};
 const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));
 export function resetSupported(board){return compatible(board,release)&&compareVersion(board.firmwareVersion,'hem-1.0.0')>=0;}
